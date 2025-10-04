@@ -268,7 +268,7 @@ def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None, padding: bool=Tru
 
 def segments2boxes(segments):
     """
-    Convert segment labels to box labels, i.e. (cls, xy1, xy2, ...) to (cls, xywh).
+    Convert segment labels to box labels, i.e. (xy1, xy2, ...) to xywh.
 
     Args:
         segments (list): List of segments where each segment is a list of points, each point is [x, y] coordinates.
@@ -279,8 +279,34 @@ def segments2boxes(segments):
     boxes = []
     for s in segments:
         x, y = s.T  # segment xy
-        boxes.append([x.min(), y.min(), x.max(), y.max()])  # cls, xyxy
-    return xyxy2xywh(np.array(boxes))  # cls, xywh
+        boxes.append([x.min(), y.min(), x.max(), y.max()])  # xyxy
+    return xyxy2xywh(np.array(boxes))  # xywh
+
+def segment2box(segment: np.ndarray, width:int=640, height:int=640):
+    """
+    Convert segment coordinates to bounding box coordinates
+
+    Convert a single segment label to a box label by finding the minimum and maximum x and y coordinates.
+    Apply inside-image constraint and clips coordinates when necessary
+    Args:
+        segment (np.ndarray): Mx2 where M is the number of points in segment
+        width (int): Width of the image in pixels
+        height (int): Height of the image in pixels
+    Returns:
+        (np.ndarray): 1D array Bounding box coordinates in xyxy format [x1,y1,x2,y2]
+    """
+    x, y=segment.T 
+    # Clip coordinates if 3 out of 4 sides are outside the image
+    if np.array([x.min()<0, y.min()<0, x.max()>width, y.max()>height]).sum()>=3:
+        x=x.clip(0, width)
+        y=y.clip(0, height)
+    inside=(x>=0)&(y>=0)&(x<=width)&(y<=height)
+    x=x[inside]
+    y=y[inside]
+
+    # xyxy
+    return np.array([x.min(), y.min(), x.max(), y.max()], dtype=segment.dtype) if any(x) else [] #np.zeros(4, dtype=segment.dtype) 
+
 
 def resample_segments(segments: list[np.ndarray], n: int=1000)->list[np.ndarray]:
     """

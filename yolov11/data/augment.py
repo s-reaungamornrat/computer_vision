@@ -3,12 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 import cv2
+import math
 import random
 import numbers
 import numpy as np
 
 from computer_vision.yolov11.instance.instance import Instances
 from computer_vision.yolov11.utils.metrics import bbox_ioa
+from computer_vision.yolov11.utils.ops import segment2box
 
 class BaseMixTransform:
     """
@@ -640,4 +642,255 @@ class LetterBox:
         labels['instances'].denormalize(*labels['img'].shape[:2][::-1])
         labels['instances'].scale(*ratio)
         labels['instances'].add_padding(padw, padh)
+        return labels
+
+class RandomPerspective:
+    """
+    Implement random perspective and affine transformations on images and corresponding annotations.
+
+    This class applies random rotations, translations, scaling, shearing, and perspective transformations to images and their associated
+    bounding boxes, segments, and keypoints. It can be used as part of an augmentation pipeline for object detection and instance segmentation
+    tasks.
+    """
+    def __init__(self, degrees:float=0., translate:float=0.1, scale:float=0.5, shear:float=0.,perspective:float=0., 
+                 border:tuple[int,int]=(0,0),pre_transform=None):
+        """
+        Initialize RandomPerspective with transform parameters
+        Args:
+            degrees (float): Degree range for random rotations
+            translate (float): Fraction of total width and height for random translation
+            scale (float): Scaling factor interval, e.g., a scale factor of 0.5 allows resizing between 50-150%
+            shear (float): Shear intensity (angle in degrees)
+            perspective (float): Perspective distortion factor
+            border (tuple[int,int]): Tuple specifying mosaic border (top/bottom, left/right) -> height, width direction
+            pre_transform (Callable | None): Function/transform to apply to the image before starting the random
+                transformation
+        """
+        self.degrees=degrees
+        self.translate=translate
+        self.scale=scale
+        self.shear=shear
+        self.perspective=perspective
+        self.border=border
+        self.pre_transform=pre_transform
+        
+    def affine_transform(self, img: np.ndarray, border: tuple[int, int])->tuple[np.ndarray, np.ndarray, float]:
+        """
+        Apply a sequence of affine transformation centered around the image center
+        Args:
+            img (np.ndarray): Input image of size HxWxC to be transformed
+            border (tuple[int,int]): Border dimensions for the transformed image
+        Returns:
+            img (np.ndarray): Transformed image of size HxWxC
+            M (np.ndarray): 3x3 transformation matrix
+            s (float): Scale factor applied during the transformation
+        """
+        # Center
+        C=np.eye(3, dtype=np.float32)
+        C[0,2]=-img.shape[1]/2 # x translation in pixels
+        C[1,2]=-img.shape[0]/2 # y translation in pixels
+
+        # Perspective
+        P=np.eye(3, dtype=np.float32)
+        P[2,0]=random.uniform(-self.perspective, self.perspective) # x perspective about y
+        P[2,1]=random.uniform(-self.perspective, self.perspective) # y perspective about x
+
+        # Rotation and Scale
+        R=np.eye(3, dtype=np.float32)
+        a=random.uniform(-self.degrees, self.degrees)
+        s=random.uniform(1.-self.scale, 1.+self.scale)
+        R[:2]=cv2.getRotationMatrix2D(angle=a, center=(0,0), scale=s) # 2x3 matrix
+
+        # Shear
+        S=np.eye(3, dtype=np.float32)
+        S[0,1]=math.tan(random.uniform(-self.shear, self.shear)*math.pi/180.) # x shear in degrees
+        S[1,0]=math.tan(random.uniform(-self.shear, self.shear)*math.pi/180.) # y shear in degrees
+
+        # Translation
+        T=np.eye(3, dtype=np.float32)
+        T[0,2]=random.uniform(0.5-self.translate, 0.5+self.translate)*self.size[0] # x translation in pixels
+        T[1,2]=random.uniform(0.5-self.translate, 0.5+self.translate)*self.size[1] # y translation in pixels
+
+        # Combined matrices
+        M=T @ S @ R @ P @ C # order of operations (right to left) is important
+
+        # Affine image
+        if (border[0]!=0) or (border[1]!=0) or (M!=np.eye(3)).any(): # image chaged
+            if self.perspective: img=cv2.warpPerspective(img, M, dsize=self.size, borderValue=(114,)*img.shape[-1])
+            else: img=cv2.warpAffine(img, M[:2], dsize=self.size, borderValue=(114,)*img.shape[-1]) # use 2x3 matrix
+            if img.ndim==2: img=img[...,None]
+        return img, M, s
+        
+    def apply_bboxes(self, bboxes:np.ndarray, M:np.ndarray)->np.ndarray:
+        """
+        Apply affine transformation to bounding boxes
+        Args:
+            bboxes (np.ndarray): Bounding boxes in xyxy format and in pixel units with shape (N,4),
+                where N is the number of boxes
+            M (np.ndarray): Affine transformation matrix with shape (3,3)
+        Returns:
+            (np.ndarray): Transformed bounding boxes in xyxy format and in pixel units with shape (N,4)
+        """
+        n=len(bboxes)
+        if n==0: return bboxes
+        # form a matrix, for each box, containing 4 corners of the box
+        # [[x1,y1,1],
+        #  [x2,y2,1],
+        #  [x1,y2,1],
+        # [x2,y1,1],
+        # ...]
+        xy=np.ones((n*4, 3), dtype=bboxes.dtype)
+        # 4 corners of the box:  x1y1, x2y2, x1y2, x2,y1
+        xy[:, :2]=bboxes[:,[0,1,2,3,0,3,2,1]].reshape(n*4, 2) 
+        xy=xy@M.T # transform
+        xy=(xy[:,:2]/xy[:,2:3] if self.perspective else xy[:,:2]).reshape(n,8) # perspective rescale or affine
+
+        # Create new boxes
+        x=xy[:,[0,2,4,6]] # x1, x2, x1, x2
+        y=xy[:,[1,3,5,7]] # y1, y2, y2, y1
+        return np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1)), dtype=bboxes.dtype).reshape(4,n).T
+
+    def apply_segments(self, segments: np.ndarray, M: np.ndarray)->tuple[np.ndarray, np.ndarray]:
+        """
+        Apply affine transformations to segments and generate a new bounding boxes
+
+        This function applies affine transformations to input segments and generates new bounding boxes based on
+        the transformed segments. It clips the transformed segments to fit within the new bounding boxes
+        Args:
+            segments (np.ndarray): Input segments with shape (N, M, 2), where N is the number of segments, M is the 
+                number of points in each segment, and 2 for x, y
+            M (np.ndarray): Affine transformation matrix with shape (3,3)
+        Returns:
+            bboxes (np.ndarray): New bounding boxes with shape (N, 4) in xyxy format in pixel units
+            segments (np.ndarray): Transformed and clipped segments with shape (N,M,2) in pixel units
+        """
+        n, num=segments.shape[:2]
+        if n==0: return np.zeros((0,4), dtype=np.float32), segments
+
+        xy=np.ones((n*num, 3), dtype=segments.dtype)
+        segments=segments.reshape(-1,segments.shape[-1]) # NxMx2 -> (NM)x2
+        xy[:,:2]=segments
+        xy=xy@M.T # transform
+        xy=xy[:,:2]/xy[:,2:3]
+        segments=xy.reshape(n, -1, 2)
+        bboxes=[] # store boxes in x1,y1,x2,y2
+        for xy in segments:
+            box=segment2box(xy, width=self.size[0], height=self.size[1])
+            if len(box)>0: bboxes.append(box)
+        bboxes=np.stack(bboxes, 0) # Nx4
+        # bounding boxes have been clipped to be inside images but segments have not, so we use bounding boxes to
+        # clip segments
+        segments[...,0]=segments[...,0].clip(bboxes[:,0:1], bboxes[:,2:3])
+        segments[...,1]=segments[...,1].clip(bboxes[:,1:2], bboxes[:,3:4])
+        return bboxes, segments
+
+    def apply_keypoints(self, keypoints:np.ndarray, M:np.ndarray)->np.ndarray:
+        """
+        Apply affine transformation to keypoints
+
+        This method transforms the input keypoints using the provided affine transformation matrix. It handles
+        perspective rescaling if necessary and updates the visibility of keypoints that fall outside the image
+        boundaries after transformation
+
+        Args:
+            keypoints (np.ndarray): Array of keypoints with shape (N, 17, 3), where N is the number of instances,
+                17 is the number of keypoints per instance, and 3 represents (x, y, visibility)
+            M (np.ndarray): 3x3 affine transformation matrix
+        Returns:
+            (np.ndarray): Transformed keypoint array with the same shape as input (N, 17, 3)
+        """
+        n, nkpt=keypoints.shape[:2]
+        if n==0: return keypoints
+
+        xy=np.ones((n*nkpt, 3), dtype=keypoints.dtype)
+        visible=keypoints[...,2].reshape(n*nkpt, 1)
+        xy[:,:2]=keypoints[...,:2].reshape(n*nkpt, 2)
+        xy=xy@M.T # transform
+        xy=xy[:,:2]/xy[:,2:3] # perspective rescale or affine
+        outside_mask=(xy[:,0]<0) | (xy[:,1]<0) | (xy[:,0]>self.size[0]) | (xy[:,1]>self.size[1])
+        visible[outside_mask]=0
+        return np.concatenate([xy, visible], axis=-1).reshape(n, nkpt, 3)
+
+    @staticmethod
+    def box_candidates(box1:np.ndarray, box2:np.ndarray, wh_thr:int=2, ar_thr:int=100, area_thr:float=0.1, eps:float=1.e-16)->np.ndarray:
+        """
+        Compute candidate boxes for further processing based on size and aspect ratio criteria
+    
+        This method compares boxes before and after augmentation to determine if they meet specified 
+        thresholds for width, height, aspect ratio, and area. It's used to filter out boxes that have 
+        been overly distorted or reduced by the augmentation process.
+        Args:
+            box1 (np.ndarray): Original boxes before augmentation, shape (4,N) where N is the number of boxes.
+                Format is [x1,y1,x2,y2] in pixel units
+            box2 (np.ndarray): Augmented boxes after transformation, shape (4,N). Format is [x1,y1,x2,y2] in pixel units
+            wh_thr (int): Width and height threshold in pixels. Boxes smaller than this in either direction are rejected
+            ar_thr (int): Aspect ratio threshold. Boxes with an aspect ratio greater than this value are rejected.
+            area_thr (float): Area ratio threshold. Boxes with an area ratio (new/old) less than this value are rejected.
+            eps (float): Small epsilon value to prevent division by zero
+        Returns:
+            (np.ndarray): Boolean array of size N indicating which boxes are candidates. True values correspond to boxes that 
+                meet all criteria.
+        """
+        w1,h1=box1[2]-box1[0], box1[3]-box1[1] # N
+        w2,h2=box2[2]-box2[0], box2[3]-box2[1] # N
+        ar=np.minimum(w2/(h2+eps), h2/(w2+eps)) # N aspect ratio
+        return (w2>wh_thr)&(h2>wh_thr)&( w2*h2/(w1*h1+eps) > area_thr ) & (ar < ar_thr) # N
+    
+    def __call__(self, labels: dict[str, Any])->dict[str, Any]:
+        """
+        Apply random perspective and affine transformations to an image and its associated labels.
+    
+        This method performs a series of transformations including rotation, translation, scaling, shearing, and
+        perspective distortion on the input images and adjusts the corresponding bounding boxes, segments, 
+        and keypoints accordingly
+        Args:
+            labels (dict[str, Any]): A dict containing image data and annotations. Must include
+                `img` (np.ndarray): The input image
+                `cls` (np.ndarray): Class labels
+                `instamces` (Instances): Object onstances with bounding boxes, segments, and keypoints
+                `mosaic_border` (tuple[int, int], optional): Border size for mosaic augmentation
+        Returns:
+            (dict[str, Any]): Transformed label dict containing:
+                `img` (np.ndarray): The transformed image
+                `cls` (np.ndarray): Updated class labels
+                `instances` (Instances): Updated object instances
+                `resized_shape` (tuple[int, int]): New image shape after transformation
+        """
+    
+        if self.pre_transform and "mosaic_border" not in labels: labels=self.pre_transform(labels)
+        labels.pop("ratio_pad", None) # do not need ratio pad
+        
+        img=labels['img']
+        cls=labels['cls']
+        instances=labels.pop("instances")
+        # Make sure the coordinate format is xyxy
+        instances.convert_bbox(format='xyxy')
+        instances.denormalize(*(img.shape[:2][::-1])) # passing in width and height
+        
+        border=labels.pop("mosaic_border", self.border)
+        self.size=img.shape[1]+border[1]*2, img.shape[0]+border[0]*2 # width and height
+        # M is an affine matrix
+        # Scale for func: `box_candidates`
+        img, M, scale=self.affine_transform(img, border)
+        
+        bboxes=self.apply_bboxes(instances.bboxes, M)
+        
+        segments=instances.segments
+        keypoints=instances.keypoints
+        # Update bboxes if there are segments
+        if len(segments): bboxes, segments=self.apply_segments(segments, M)
+        if keypoints is not None: keypoints=self.apply_keypoints(keypoints, M)
+        new_instances=Instances(bboxes, segments, keypoints, bbox_format='xyxy', normalized=False)
+        # Clip
+        new_instances.clip(*self.size)
+        
+        # Filter instances
+        instances.scale(scale_w=scale, scale_h=scale, bbox_only=True)
+        # Make the bboxes have the same scale with new_bboxes
+        i=self.box_candidates(box1=instances.bboxes.T, box2=new_instances.bboxes.T, area_thr=0.01 if len(segments) else 0.1)
+        labels['instances']=new_instances[i]
+        labels['cls']=cls[i]
+        labels['img']=img
+        labels['resized_shape']=img.shape[:2]
+    
         return labels
