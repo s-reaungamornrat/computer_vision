@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import torch
 
+import numpy as np
+
 def make_divisible(x: int, divisor):
     """
     Return the nearest number that is divisible by the given divisor.
@@ -263,3 +265,38 @@ def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None, padding: bool=Tru
             boxes[...,3]-=pad_y
     boxes[...,:4]/=gain
     return boxes if xywh else clip_boxes(boxes, img0_shape)
+
+def segments2boxes(segments):
+    """
+    Convert segment labels to box labels, i.e. (cls, xy1, xy2, ...) to (cls, xywh).
+
+    Args:
+        segments (list): List of segments where each segment is a list of points, each point is [x, y] coordinates.
+
+    Returns:
+        (np.ndarray): Bounding box coordinates in xywh format.
+    """
+    boxes = []
+    for s in segments:
+        x, y = s.T  # segment xy
+        boxes.append([x.min(), y.min(), x.max(), y.max()])  # cls, xyxy
+    return xyxy2xywh(np.array(boxes))  # cls, xywh
+
+def resample_segments(segments: list[np.ndarray], n: int=1000)->list[np.ndarray]:
+    """
+    Resample segments to n points each using linear interpolation
+
+    Args:
+        segments (list[np.ndarray]): List of Nx2 arrays where N is the number of points in each segment
+        n (int): Number of points to resample each segment to
+    Returns:
+        (list[np.ndarray]): Resampled segments with n points each
+    """
+    for i, s in enumerate(segments):
+        if len(s)==n: continue
+        s=np.concatenate((s, s[0:1,:]), axis=0) # (N+1)x2 close segment
+        x=np.linspace(0, len(s)-1, n-len(s) if len(s)<n else n)
+        xp=np.arange(len(s))
+        if len(s) < n: x=np.insert(x, np.searchsorted(x, xp), xp) 
+        segments[i]=np.vstack([np.interp(x, xp, s[:,i]) for i in range(s.shape[-1])], dtype=np.float32).T # 2xN -> Nx2
+    return segments

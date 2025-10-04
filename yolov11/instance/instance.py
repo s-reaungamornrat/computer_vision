@@ -33,7 +33,7 @@ class Bboxes:
     Notes:
         This class does not handle normalization and denormalization of bounding boxes
     """
-    def __init__(self, boxes: np.ndarray, format: str='xyxy')->None:
+    def __init__(self, bboxes: np.ndarray, format: str='xyxy')->None:
         """
         Initialize the Bboxes class with bounding box data in a specified format
         Args:

@@ -152,3 +152,33 @@ def batch_probiou(obb1: torch.Tensor | np.ndarray, obb2: torch.Tensor | np.ndarr
     hd = (1.0 - (-bd).exp() + eps).sqrt()
     return 1 - hd
 
+def bbox_ioa(box1:np.ndarray, box2:np.ndarray, iou:bool=False, eps:float=1.e-7)->np.ndarray:
+    """
+    Calculate the intersection over box2 area given box1 and box2
+    
+    Args:
+        box1 (np.ndarray): A numpy array of shape (Mx4) representing M bounding boxes in x1y1x2y2 format.
+        box2 (np.ndarray): A numpy array of shape (Nx4) representing N bounding boxes in x1y1x2y2 format.
+        iou (bool, optional): Calculate the standard IoU if True else return intersection over box2 area
+        eps (float, optional): A small value to avoid division by zero
+    Returns:
+        (np.ndarray): A numpy array of shape (M, N) representing the intersection of box2 area
+    """
+    # Get the coordinates of the bounding box
+    b1_x1,b1_y1,b1_x2,b1_y2=box1.T # each M elements
+    b2_x1,b2_y1,b2_x2,b2_y2=box2.T # each N elements
+    
+    # Intersection area: pairwise min max comparison, each comparison term  is MxN    
+    inter_area=(np.minimum(b1_x2[:,None], b2_x2) - np.maximum(b1_x1[:,None], b2_x1)).clip(0) * \
+               (np.minimum(b1_y2[:,None], b2_y2) - np.maximum(b1_y1[:,None], b2_y1)).clip(0)
+    
+    # Box2 area
+    area=(b2_x2-b2_x1)*(b2_y2-b2_y1) # N element
+    
+    if iou:
+        raise NotImplementedError # We actually implemented it but just want to know whether we use this part of code at all
+        box1_area=(b1_x2-b1_x1)*(b1_y2-b1_y1) # M elements
+        area=area[None,]+box1_area[:,None]-inter_area # MxN=1xN + Mx1 -MxN
+    
+    # Intersection over box2 area
+    return inter_area/(area+eps)
