@@ -16,6 +16,8 @@ import numpy as np
 from computer_vision.yolov11.utils.ops import resample_segments
 from computer_vision.yolov11.instance.instance import Instances
 from .utils import get_image_files, verify_image_label, cache_labels, load_dataset_cache_file, imread
+from computer_vision.yolov11.data.augment import Compose, Mosaic, MixUp, CutMix, RandomPerspective,\
+RandomHSV, RandomFlip, LetterBox, CopyPaste
 
 class YOLODataset(torch.utils.data.Dataset):
     def __init__(self, img_path: str|list[str], label_path: str|list[str], data:dict[str, Any] | str, hyp:dict[str, Any],   
@@ -257,3 +259,27 @@ class YOLODataset(torch.utils.data.Dataset):
         label['ratio_pad']=(label['resized_shape'][0]/label['ori_shape'][0], label['resized_shape'][1]/label['ori_shape'][1]) # for evaluation
         if self.rect: label['rect_shape']=self.batch_shapes[self.batch[index]]
         return self.update_labels_info(label)
+
+    def build_transform(self, hyp:dict | None = None)-> Compose:
+        """
+        Build and append transforms to the list
+        Args:
+            hyp (dict optional): Hyperparameters for transforms.
+        Returns:
+            (Compose): Composed transform
+        """
+        if self.augment:
+            if self.rect: hyp['mosaic']=hyp['mixup']=hyp['cutmix']=0.0
+            mosaic=Mosaic(self, imgsz=self.imgsz, p=hyp['mosaic'], n=4)
+            affine=RandomPerspective(degrees=hyp['degrees'], translate=hyp['translate'],
+                                    scale=hyp['scale'], shear=hyp['shear'], perspective=hyp['perspective'],
+                                    pre_transform=None)
+            pre_transform=Compose([mosaic, affine])
+            transforms=Compose([pre_transform,
+                               MixUp(self, pre_transform=pre_transform, p=hyp['mixup']),
+                               CutMix(self, pre_transform=pre_transform, p=hyp['cutmix']),
+                               RandomHSV(hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v']),
+                               RandomFlip(direction='vertical', p=hyp['flipud']),
+                               RandomFlip(direction='horizontal', p=hyp['fliplr'])])
+        else: transforms=Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False)])
+        
