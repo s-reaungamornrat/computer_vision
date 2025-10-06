@@ -181,6 +181,8 @@ def cache_labels(path: Path, image_files: list[str], label_files: list[str], n_c
         label_files (list[str]): List of path to corresponding labels
         n_classes (int): Number of classes
         single_cls (bool): Whether to consider all classes as a single class
+    Returns:
+        cache (dict[str, Any]): annotation cache with keys `labels` and `results`
     """
 
     x={"labels":[]}
@@ -209,3 +211,4 @@ def cache_labels(path: Path, image_files: list[str], label_files: list[str], n_c
     if nf==0: print(f'No label found!!!')
     x["results"]=nf, nm, ne, nc, total
     save_dataset_cache_file(path, x)
+    return x

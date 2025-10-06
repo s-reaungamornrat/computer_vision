@@ -83,11 +83,21 @@ class YOLODataset(torch.utils.data.Dataset):
         filenames=[os.path.splitext(os.path.basename(file))[0] for file in self.im_files]
         label_files=[os.path.join(label_dirpath, f'{file}.txt') for file in filenames]
         cache_path=Path(label_files[0]).parent.with_suffix('.cache')
-        try: cache, exist=load_dataset_cache_file(cache_path), True
-        except FileNotFoundError: 
+        if not cache_path.is_file():
+            print(f'In data.dataset.YOLODataset.update_images_labels cache path {cache_path} does not exist. Create it!!!')
             exist=False
             cache=cache_labels(path=cache_path, image_files=self.im_files, label_files=label_files, n_classes=len(self.data['names']), 
                                 single_cls=self.single_cls)
+            print(f'In data.dataset.YOLODataset.update_images_labels cache is None {cache is None} but type {type(cache)}')
+        else: 
+            print(f'In data.dataset.YOLODataset.update_images_labels cache path {cache_path} exist. Load it!!!')
+            cache, exist=load_dataset_cache_file(cache_path), True
+        # try: cache, exist=load_dataset_cache_file(cache_path), True
+        # except FileNotFoundError: 
+        #     exist=False
+        #     cache=cache_labels(path=cache_path, image_files=self.im_files, label_files=label_files, n_classes=len(self.data['names']), 
+        #                         single_cls=self.single_cls)
+   
         # Display cache
         nf, nm, ne, nc, n=cache.pop("results") # found, missing, empty, corrupt, total
         if exist: print(f"Scanning {cache_path} ... {nf} images with {nm} missing and {ne} empty files as well as {nc} corrupt files")

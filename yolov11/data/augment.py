@@ -4,6 +4,7 @@ from typing import Any
 
 import cv2
 import math
+import copy
 import random
 import numbers
 import numpy as np
@@ -370,6 +371,123 @@ class Mosaic(BaseMixTransform):
     
         return final_labels
 
+class CopyPaste(BaseMixTransform):
+    """
+    CopyPaste class for applying Copy-Paste augmentation to image datasets.
+
+    This class implements the Copy-Paste augmentation technique as described in the paper "Simple Copy-Paste is a Strong Data Augmentation Method
+    for Instance Segmentation" (https://arxiv.org/abs/2012.07177). It combines objects from different images to create new training samples.
+
+    It has 2 modes `mixup` and `flip`. For `mixup`, it requires that the two images to mix must have the same size so `pre_transform` must be applied
+    to the main and additional images to make the two images having the same size. For `flip`, since the same image is used, `pre_transform` 
+    is not needed. 
+
+    It requires segments to present in `instances` since segments are used to define regions to be copied and pasted onto the other image. It selects
+    regions based non-overlapping bounding boxes in the two images or based on bounding boxes that are less overlapped
+    """
+    def __init__(self, dataset=None, pre_transform=None, p:float=0.5, mode:str='flip')->None:
+        """
+        Initialize CopyPaste object with dataset, pre_transform, and probability of applying mix transformation
+        """
+        super().__init__(dataset=dataset, pre_transform=pre_transform, p=p)
+        assert mode in {'flip', 'mixup'}, f'Expected `mode` to be `flip` or `mixup`, but got {mode}'
+        self.mode=mode
+
+    def _mix_transform(self, labels:dict[str, Any])->dict[str, Any]:
+        """
+        Apply Copy-Paste augmentation to combine objects from another image into the current image.
+        """
+        labels2=labels['mix_labels'][0]
+        return self._transform(labels, labels2)
+
+    def _transform(self, labels1: dict[str, Any], labels2:dict[str, Any]={})->dict[str, Any]:
+        """
+        Apply Copy-Paste augmentation to combine objects from another image into the current image. If just 1 image
+        provided, create a flipped left-right version of the input and copy labels to the original input. Either cases
+        copy and paste only occur if bounding boxes in two images are less overlapped
+        Args:
+            labels1 (dict[str, Any]): A dict containing the original image and label information
+            labels2 (dict[str, Any]): A dict containing the original image and label information
+        Returns:
+            (dict[str, Any]): An updated dict containing the updated image and label information
+        """
+        
+        im=labels1['img']
+        if "mosaic_border" not in labels1: im=im.copy() # avoid modifying original non-mosaic image
+        cls=labels1['cls']
+        h,w=im.shape[:2]
+        instances=labels1.pop('instances')
+        instances.convert_bbox(format='xyxy')
+        instances.denormalize(w, h)
+        
+        instances2=labels2.pop('instances', None)
+        if instances2 is None:
+            instances2=copy.deepcopy(instances)
+            instances2.fliplr(w)
+        
+        # See whether there are boxes in two instances that do not intersect or having small
+        # intersection
+        # MxN = Mx4 Nx4
+        ioa=bbox_ioa(instances2.bboxes, instances.bboxes) # intersection over area
+        # indices of boxes in instances2 that less intersect boxes in instances
+        indices=np.nonzero((ioa<0.3).all(axis=1))[0] 
+        n=len(indices)
+        # sorted_idx of indices that lead to boxes in instances2 that less intersect with boxes in 
+        # instances
+        sorted_idx=np.argsort(ioa.max(axis=1)[indices]) # sort from small to large
+    
+        indices=indices[sorted_idx] # get indices of boxes in instances 2 that less intersect to instances
+        # place holder for bool-mask masking region in im to be copied-pasted by image in labels2
+        im_new=np.zeros(im.shape, np.uint8) 
+        for j in indices[:round(self.p*n)]:
+            cls=np.concatenate((cls, labels2.get('cls', cls)[[j]]), axis=0)
+            instances=Instances.concatenate((instances, instances2[[j]]), axis=0)
+            cv2.drawContours(im_new, instances2.segments[[j]].astype(np.int32), -1, (1,1,1), cv2.FILLED)
+    
+        result=labels2.get('img', cv2.flip(im, 1)) # flip horizontally, i.e. around y axis
+        # cv2.clip would eliminate the last dimension for grayscale images
+        if result.ndim==2: result=result[...,None]
+        
+        # area or region in im to be replace by the same region in result
+        i=im_new.astype(bool)
+        im[i]=result[i]
+        
+        labels1['img']=im
+        labels1['cls']=cls
+        labels1['instances']=instances
+    
+        return labels1
+
+    def __call__(self, labels:dict[str, Any])->dict[str, Any]:
+        """
+        Apply Copy-Paste augmentation to an image and its labels. For `mixup`, it requires that
+        the two images to mix must have the same size so `pre_transform` must to apply to the main
+        and additional images to make the two images having the same size. For `flip`, since the same
+        image is used, `pre_transform` is not needed.
+        Args:
+            labels (dict[str, Any]): A dict containing the original image and label information
+        Returns:
+            (dict[str, Any]): An updated dict containing the updated image and label information
+        """
+        if len(labels['instances'].segments)==0 or self.p==0: return labels
+        
+        if self.mode=='flip': return self._transform(labels)
+        
+        # Get an additional image index
+        index=self.get_indices()
+        if isinstance(index, int): index=[index]
+        
+        # Get image information 
+        mix_labels=[self.dataset.get_image_and_label(i) for i in index]
+        
+        if self.pre_transform is not None:
+            for i, data in enumerate(mix_labels): mix_labels[i]=self.pre_transform(data)
+        labels['mix_labels']=mix_labels
+        
+        labels=self._mix_transform(labels)
+        labels.pop('mix_labels', None)
+        return labels
+        
 class MixUp(BaseMixTransform):
     """
     Apply MixUp augmentation to image datasets.
@@ -763,26 +881,42 @@ class RandomPerspective:
         Returns:
             bboxes (np.ndarray): New bounding boxes with shape (N, 4) in xyxy format in pixel units
             segments (np.ndarray): Transformed and clipped segments with shape (N,M,2) in pixel units
+            indices (list[int]): List of remaining valid segments
         """
+        #print(f'In RandomPerspective.apply_segments segments {segments.shape}')
         n, num=segments.shape[:2]
         if n==0: return np.zeros((0,4), dtype=np.float32), segments
 
         xy=np.ones((n*num, 3), dtype=segments.dtype)
         segments=segments.reshape(-1,segments.shape[-1]) # NxMx2 -> (NM)x2
+        #print(f'xy {xy.shape} segments {segments.shape}')
         xy[:,:2]=segments
         xy=xy@M.T # transform
         xy=xy[:,:2]/xy[:,2:3]
         segments=xy.reshape(n, -1, 2)
-        bboxes=[] # store boxes in x1,y1,x2,y2
-        for xy in segments:
+        #print(f'reshape segments {segments.shape}')
+        # indices store indices of valid segments to be used to filter out old boxes 
+        # bboxes store boxes in x1,y1,x2,y2
+        indices, bboxes, filtered_segments=[], [],[] 
+        for i, xy in enumerate(segments):
             box=segment2box(xy, width=self.size[0], height=self.size[1])
-            if len(box)>0: bboxes.append(box)
+            if len(box)==0: continue
+            bboxes.append(box)
+            #print('\t box', box.shape, ' xy ', xy.shape,  ' xy[:,0] ', xy[:,0].shape, ' box ', box)
+            xy[:,0]=xy[:,0].clip(box[0], box[2])
+            xy[:,1]=xy[:,1].clip(box[1], box[3])
+            filtered_segments.append(xy)
+            indices.append(i)
+            
         bboxes=np.stack(bboxes, 0) # Nx4
+        segments=np.stack(filtered_segments, 0)
+        #print('bboxes ', bboxes.shape, ' segments ', segments.shape)
         # bounding boxes have been clipped to be inside images but segments have not, so we use bounding boxes to
         # clip segments
-        segments[...,0]=segments[...,0].clip(bboxes[:,0:1], bboxes[:,2:3])
-        segments[...,1]=segments[...,1].clip(bboxes[:,1:2], bboxes[:,3:4])
-        return bboxes, segments
+        #print(f'In RandomPerspective.apply_segments segments[...,0] {segments[...,0].shape} bboxes[:,0:1] {bboxes[:,0:1].shape} bboxes[:,2:3] {bboxes[:,2:3].shape}')
+        # segments[...,0]=segments[...,0].clip(bboxes[:,0:1], bboxes[:,2:3])
+        # segments[...,1]=segments[...,1].clip(bboxes[:,1:2], bboxes[:,3:4])
+        return bboxes, segments, indices
 
     def apply_keypoints(self, keypoints:np.ndarray, M:np.ndarray)->np.ndarray:
         """
@@ -878,7 +1012,8 @@ class RandomPerspective:
         segments=instances.segments
         keypoints=instances.keypoints
         # Update bboxes if there are segments
-        if len(segments): bboxes, segments=self.apply_segments(segments, M)
+        indices=None # indices to valid boxes after transformation
+        if len(segments): bboxes, segments, indices=self.apply_segments(segments, M)
         if keypoints is not None: keypoints=self.apply_keypoints(keypoints, M)
         new_instances=Instances(bboxes, segments, keypoints, bbox_format='xyxy', normalized=False)
         # Clip
@@ -886,11 +1021,231 @@ class RandomPerspective:
         
         # Filter instances
         instances.scale(scale_w=scale, scale_h=scale, bbox_only=True)
+        box1=instances.bboxes
+        if indices is not None:
+            box1=box1[indices]
+            cls=cls[indices]
         # Make the bboxes have the same scale with new_bboxes
-        i=self.box_candidates(box1=instances.bboxes.T, box2=new_instances.bboxes.T, area_thr=0.01 if len(segments) else 0.1)
+        i=self.box_candidates(box1=box1.T, box2=new_instances.bboxes.T, area_thr=0.01 if len(segments) else 0.1)
         labels['instances']=new_instances[i]
         labels['cls']=cls[i]
         labels['img']=img
         labels['resized_shape']=img.shape[:2]
     
         return labels
+
+class RandomHSV:
+    """
+    Randomly adjust the Hue, Saturation, and Value (HSV) channels of an image
+    This class applies random HSV augmentation to images within predefined limits set by 
+    hgain, sgain, and vgain.
+
+    Unlike mixing augmentation and letterbox, this does not modify annotation instances (including bounding boxes, class indices,
+    segments and keypoints) so however annotations were defined as input are passing through without any changes
+    """
+    def __init__(self, hgain:float=0.5, sgain:float=0.5, vgain:float=0.5)->None:
+        """
+        Initialize the RandomHSV object for random HSV (Hue, Saturation, Value) augmentation.
+        Args:
+            hgain (float): Maximum variation for hue. Should be in the range [0, 1]
+            sgain (float): Maximum variation for saturation. Should be in the range [0,1].
+            vgain (float): Maximum variation for value. Should be in the range [0,1].
+        """
+        self.hgain=hgain
+        self.sgain=sgain
+        self.vgain=vgain
+        
+    def __call__(self, labels: dict[str, Any])->dict[str, Any]:
+        """
+        Apply random HSV augmentation to an image within predefined limits.
+        
+        This method modifies the input image by randomly adjusting its Hue, Saturation, and Value
+        (HSV) channels. The adjustments are made within the limits set by hgain, sgain, and vgain 
+        during initialization.
+        
+        Args:
+            labels (dict[str, Any]): A dict containing image data and metadata. Must include an `img`
+                key with the image as a numpy array
+        Returns:
+            (dict[str, Any]): A dict containing the modified image
+        """
+
+        img=labels['img']
+        
+        if img.shape[-1]!=3: return labels # only applicable to 3 channel images
+        
+        if not (self.hgain or self.sgain or self.vgain): return labels
+        
+        dtype=img.dtype # uint8
+        r=np.random.uniform(low=-1., high=1.0, size=3)*[self.hgain, self.sgain, self.vgain] # random gains
+        x=np.arange(0, 256, dtype=r.dtype)
+        lut_hue=((x+r[0]*180)%180).astype(dtype)
+        # scale down and up by r+1, e.g.  r=[0.5,0.5] -> scale down and up by 50% and 150%
+        # r+1 also make sure that r near zero does not destroy saturation and value
+        # and that r+1 is always positive
+        lut_sat=np.clip(x*(r[1]+1), 0, 255).astype(dtype) 
+        lut_val=np.clip(x*(r[2]+1), 0, 255).astype(dtype)
+        lut_sat[0]=0 # prevent pure white changing color
+        
+        
+        hue, sat, val=cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2HSV))
+        im_hsv=cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val)))
+        cv2.cvtColor(im_hsv, cv2.COLOR_HSV2BGR, dst=img) # no return needed
+        return labels
+
+class RandomFlip:
+    """
+    Apply a random horizontal or vertical flip to an image with a given probability
+
+    This class performs random image flipping and updates corresponding instance annotations such as 
+    bounding boxes and keypoints. It internally converts bounding box format to xywh without modifying the 
+    normalization status of bounding boxes.
+    """
+    def __init__(self, p:float=0.5, direction:str='horizontal', flip_idx:list[int]=None)->None:
+        """
+        Initialize the RandomFlip class with probability and direction
+        Args:
+            p (float): The probility of applying the flip. Must be between 0 and 1
+            direction (str): The direction to apply the flip. Must be `horizontal` or `vertical`
+            flip_idx (list[int] | None): Index mapping for flipping keypoints, if any.
+        """
+        assert direction in {"horizontal", "vertical"}, f"Support direction `horizontal` or `vertical`, got {direction}"
+        assert 0<=p<=1., f'The probability must be in the range [0, 1], got {p}'
+
+        self.p=p
+        self.direction=direction
+        self.flip_idx=flip_idx
+
+    def __call__(self,labels:dict[str, Any])->dict[str, Any]:
+        """
+        Apply random flip to an image and update any instances like bounding boxes and keypoints accordingly
+
+        Args:
+            labels (dict[str, Any]): A dict containing the following keys:
+                `img` (np.ndarray): The image to be flipped
+                `instances` (Instances): An object containing bounding boxes and optionally keypoints
+        Returns:
+            (dict[str, Any]): The same dict with the flipped image and updated instances:
+                `img` (np.ndarray): The flipped image
+                `instances` (Instances): Updated instances matching the flipped image
+        """
+        img=labels['img']
+        instances=labels.pop('instances')
+        instances.convert_bbox(format='xywh')
+        h, w=img.shape[:2]
+        if instances.normalized: h=w=1
+            
+        if self.direction=='horizontal' and random.random()<self.p:
+            img=np.fliplr(img)
+            instances.fliplr(w)
+        if self.direction=='vertical' and random.random()<self.p:
+            img=np.flipud(img)
+            instances.flipud(h)
+        labels['img']=np.ascontiguousarray(img)
+        labels['instances']=instances
+        return labels
+
+class Compose:
+    """
+    A class for composing multiple image transformations.
+    """
+    def __init__(self, transforms):
+        """
+        Initialize the Compose object with a list of transforms
+        Args:
+            transforms (list[Callable]): A list of callable transform objects to be applied sequentially
+        """
+        self.transforms=transforms if isinstance(transforms, list) else [transforms]
+        
+    def __call__(self, data):
+        """
+        Apply a series of transformations to input data.
+
+        This method sequentially applies each transformation in the Compose object's transforms to the input 
+        data
+        
+        Args:
+            data (Any): The input data to be transformed. This can be of any type, depending on the 
+                transformations in the list.
+        Returns:
+            (Any): The transformed data after applying all transformations in sequence
+        """
+        for t in self.transforms: data=t(data)
+        return data
+        
+    def append(self, transform):
+        """
+        Append a new transform to the existing list
+        Args:
+            transform (Callable): The transformation to be added to the composition
+        Examples:
+            >>> compose=Compose([RandomFlip(), RandomPerspective()])
+            >>> compose.append(RandomHSV)
+        """
+        self.transforms.append(transform)
+
+    def insert(self, index, transform):
+        """
+        Insert a new transform at a specified index in the existing list of transform
+        Args:
+            index (int): The index at which to insert the new transform
+            transform (callable): The transform object to be inserted
+        Examples:
+            >>> compose = Compose([Transform1(), Transform2()])
+            >>> compose.insert(1, Transform3())
+            >>> len(compose.transforms)
+            3
+        """
+        self.transforms.insert(index, transform)
+        
+    def __getitem__(self, index: list[int] | tuple[int] | int)-> Compose:
+        """
+        Retrieve a specific transform or a set of transforms using indexing
+        Args:
+            index (int | list[int] | tuple[int]): Index or list of indices of the transforms to retrieve
+        Returns:
+            (Compose): A new Compose object containing the selected transform(s).
+        Examples:
+            >>> transforms = [RandomFlip(), RandomPerspective(10), RandomHSV(.5, .5, .5)]
+            >>> compose = Compose(transforms)
+            >>> single_transform=compose[1] # Return a Compose object with only RandomPerspective
+            >>> multiple_transforms=compose[0:2] # Return a Compose object with RandomFlip and RandomPerspective
+        """
+        assert isinstance(index, (int, list, tuple)), f'The indices should be either list, int, or tuple but got {type(index)}'
+        return self.transforms[index] if isinstance(index, int) else Compose([self.transforms[i] for i in index])
+
+    def __setitem__(self, index:list[int]|tuple[int]|int, value: list[Any]|tuple[Any]|Any)->None:
+        """
+        Set one or more transforms in the composition using indexing.
+
+        Args:
+            index (int| list[int] | tuple[int]): Index or list/tuple of indices to set transforms at
+            value (Any | list[Any] | tuple[Any]): Transform or list/tuple of transforms to set at the specified index (ices)
+        Examples:
+            >>> compose=Compose([Transform1(), Transform2(), Transform3()])
+            >>> compose[1]=NewTransform() # Replace the second transform
+            >>> compose[0:2]=[NewTransform1(), NewTransform2()] # Replace first two transforms
+        """
+        assert isinstance(index, (int, list, tuple)), f'The indices should be either list/tuple or int type but got {type(index)}'
+        if isinstance(index, (list, tuple)):
+            assert isinstance(value, (list, tuple)), f"Values should be a sequence but got {type(value)}"
+            assert len(index)==len(value), f'Values should be the same length as indices, but got {len(value)} values and {len(index)} indices'
+        if isinstance(index, int): index, value=[index], [value]
+        for i, v in zip(index, value):
+            assert i < len(self.transforms), f'list index {i} out of range {len(self.transforms)}'
+            self.transforms[i]=v
+            
+    def tolist(self):
+        """
+        Convert the transforms to a standard Python list
+        Returns:
+            (list[callable]): A list containing all transform objects
+        """
+        return self.transforms
+    def __repr__(self):
+        """
+        Return a string representation
+        Returns:
+            (str): A string representation, including the list of transforms
+        """
+        return f"{self.__class__.__name__}({', '.join(f'{t}' for t in self.transforms)})"
