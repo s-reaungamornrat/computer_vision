@@ -16,13 +16,13 @@ import numpy as np
 from computer_vision.yolov11.utils.ops import resample_segments
 from computer_vision.yolov11.instance.instance import Instances
 from .utils import get_image_files, verify_image_label, cache_labels, load_dataset_cache_file, imread
-from computer_vision.yolov11.data.augment import Compose, Mosaic, MixUp, CutMix, RandomPerspective,\
-RandomHSV, RandomFlip, LetterBox, CopyPaste
+from .augment import Compose, Mosaic, MixUp, CutMix, RandomPerspective, RandomHSV, RandomFlip, LetterBox,\
+CopyPaste, Format
 
 class YOLODataset(torch.utils.data.Dataset):
     def __init__(self, img_path: str|list[str], label_path: str|list[str], data:dict[str, Any] | str, hyp:dict[str, Any],   
                  imgsz:int=640, cache:bool|str=False, augment:bool=True, rect:bool=False, batch_size:int=16, stride:int=32, 
-                 pad:float=0.5, single_cls:bool=False, classes:list[int]|None=None, fraction:float=1., channels:int=3):
+                 pad:float=0.5, single_cls:bool=False, classes:list[int]|None=None, fraction:float=1., channels:int=3, task:str="detect"):
         """
         data (dict | path): Dataset configuration dictionary.
         img_path (str | list[str]): Path to the image directory or list of paths to image files
@@ -30,6 +30,10 @@ class YOLODataset(torch.utils.data.Dataset):
         """
         super().__init__()
 
+        self.use_segments=task=='segment'
+        self.use_keypoints=task=='pose'
+        self.use_obb=task=='obb'
+        
         if isinstance(hyp, str):
             hyp=Path(hyp)
             assert hyp.is_file(), f'{hyp} does not exist'
@@ -68,6 +72,9 @@ class YOLODataset(torch.utils.data.Dataset):
 
         # Below lists store images, original-image size, and size of images after resize
         self.ims, self.im_hw0, self.im_hw=[None,]*self.ni, [None,]*self.ni, [None,]*self.ni
+
+        # Transforms
+        self.transforms=self.build_transforms(hyp=hyp)
 
     def __len__(self) -> int:
         """Return the length of the labels list for the dataset."""
@@ -193,10 +200,12 @@ class YOLODataset(torch.utils.data.Dataset):
         im=imread(self.im_files[index], flag=self.cv2_flag) # BRG
         h0, w0=im.shape[:2] # original image size
         if rect_mode: # resize long side to imgsz while maintaining aspect ratio
+            #print(f'In data.dataset.YOLODataset.load_image rect_mode {rect_mode}', end=',')
             r=self.imgsz/max(h0, w0) # ratio
             if r!=1: # max(h0,w0) is equal to imgsz
                 w, h=min(math.ceil(w0*r), self.imgsz), min(math.ceil(h0*r), self.imgsz)
                 im=cv2.resize(im, (w, h), interpolation=cv2.INTER_LINEAR)
+                #print('r ', r, ' w ', w, ' h ', h, ' im ', im.shape)
         elif not(h0==w0==self.imgsz): # resize by stretching image to square imgsz
             im=cv2.resize(im, (self.imgsz, self.imgsz), interpolation=cv2.INTER_LINEAR)
         
@@ -207,7 +216,7 @@ class YOLODataset(torch.utils.data.Dataset):
             # image, original-image size, size of image after rescaling
             self.ims[index], self.im_hw0[index], self.im_hw[index]=im, (h0, w0), im.shape[:2]
             self.buffer.append(index)
-            print(f'In data.dataset.load_image self.buffer {len(self.buffer)}')
+            #print(f'In data.dataset.load_image self.buffer {len(self.buffer)}')
             if 1<len(self.buffer)>=self.max_buffer_length: 
                 j=self.buffer.pop(0)
                 self.ims[j],self.im_hw0[j],self.im_hw[j]=None, None, None
@@ -260,7 +269,7 @@ class YOLODataset(torch.utils.data.Dataset):
         if self.rect: label['rect_shape']=self.batch_shapes[self.batch[index]]
         return self.update_labels_info(label)
 
-    def build_transform(self, hyp:dict | None = None)-> Compose:
+    def build_transforms(self, hyp:dict | None = None)-> Compose:
         """
         Build and append transforms to the list
         Args:
@@ -282,4 +291,59 @@ class YOLODataset(torch.utils.data.Dataset):
                                RandomFlip(direction='vertical', p=hyp['flipud']),
                                RandomFlip(direction='horizontal', p=hyp['fliplr'])])
         else: transforms=Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False)])
+
+        transforms.append(
+            Format(bbox_format='xywh', normalize=True, return_mask=self.use_segments,
+                  return_keypoint=self.use_keypoints, return_obb=self.use_obb, batch_idx=True,
+                  mask_ratio=hyp['mask_ratio'], mask_overlap=hyp['overlap_mask'],
+                  bgr=hyp['bgr'] if self.augment else 0.0)
+        )
+        return transforms
+
+    def __getitem__(self, index:int)->dict[str, Any]:
+        """
+        Return transformed label information for given index
+        Examples:
+            >>> dataset=YOLODataset(...)
+            >>> dataset[0]
+            >>> batch=[dataset[i] for i in range(4)]
+        """
+        return self.transforms(self.get_image_and_label(index))
         
+    def __len__(self)->int:
+        """
+        Return the length of the labels list
+        """
+        return len(self.labels)
+    @staticmethod
+    def collate_fn(batch: list[dict])->dict:
+        """
+        Collate data samples into batches
+        Args:
+            batch (list[dict]): List of dictionaries containing sample data
+        Returns:
+            (dict): Collated batch with stacked tensors
+        """
+        new_batch=dict()
+        # make sure keys are in the same order
+        batch=[dict(sorted(b.items())) for b in batch]
+        keys=batch[0].keys()
+        values=list(zip(*[list(b.values()) for b in batch]))
+        
+        for i, k in enumerate(keys):
+            value=values[i]
+            if k in {'img', 'text_feats'}: value=torch.stack(value, 0) # list of CxHxW to BxCxHxW
+            elif k=='visuals': value=torch.nn.utils.rnn.pad_sequence(value, batch_first=True)
+            if k in {'masks', 'keypoints', 'bboxes', 'cls', 'segments', 'obb'}:
+                value=torch.cat(value, 0) # list of 2D tensor to a single larger 2D tensor
+            new_batch[k]=value
+            
+        # from a tuple of 1D varying length tensors with all values=0 to 
+        # a list of 1D varying length tensors with all values=0
+        new_batch['batch_idx']=list(new_batch['batch_idx']) 
+        for i in range(len(new_batch['batch_idx'])):
+            # change from 1D tensor of all zeros to index to image in the batch
+            new_batch['batch_idx'][i]+=i # add target image index to be used in build_targets
+        new_batch['batch_idx']=torch.cat(new_batch['batch_idx'], 0) # 1D tensor of image index for each annotation
+
+        return new_batch
