@@ -232,40 +232,6 @@ def ltwh2xyxy(x):
     y[..., 3] = x[..., 3] + x[..., 1]  # height
     return y
 
-def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None, padding: bool=True, xywh:bool=False):
-    """
-    Rescale bounding boxes from one image shape to another
-
-    Rescale bounding boxes from img1_shape to img0_shape, accounting for padding and aspect ratio changes.
-    Support both xyxy and xywh box formats.
-
-    Args:
-        img1_shape (tuple): Shape of the source image (height, width)
-        boxes (torch.Tensor): Bounding boxes to rescale in format (N, 4).
-        img0_shape (tuple): Shape of the target image (height, width)
-        ratio_pad (tuple, optional): Tuple of (ratio, pad) for scaling. If None, calculated from image shapes
-        padding (bool): Whether boxes are based on YOLO-style augmented images with padding
-        xywh (bool): Whether box format is xywh (True) or xyxy (False)
-    Returns:
-        (torch.Tensor): Rescaled bounding boxes in the same format as input
-    """
-    if ratio_pad is None: # calculate from img0_shape
-        gain=min(new/old for new, old in zip(img1_shape, img0_shape)) # height, width
-        pad_x=round((img1_shape[1]-img0_shape[1]*gain)/2 - 0.1)
-        pad_y=round((img1_shape[0]-img0_shape[0]*gain)/2 - 0.1)
-    else:
-        gain=ratio_pad[0]
-        pad_x, pad_y=ratio_pad[1]
-
-    if padding:
-        boxes[...,0]-=pad_x
-        boxes[...,1]-=pad_y
-        if not xywh:
-            boxes[...,2]-=pad_x
-            boxes[...,3]-=pad_y
-    boxes[...,:4]/=gain
-    return boxes if xywh else clip_boxes(boxes, img0_shape)
-
 def segments2boxes(segments):
     """
     Convert segment labels to box labels, i.e. (xy1, xy2, ...) to xywh.
@@ -326,3 +292,35 @@ def resample_segments(segments: list[np.ndarray], n: int=1000)->list[np.ndarray]
         if len(s) < n: x=np.insert(x, np.searchsorted(x, xp), xp) 
         segments[i]=np.vstack([np.interp(x, xp, s[:,i]) for i in range(s.shape[-1])], dtype=np.float32).T # 2xN -> Nx2
     return segments
+
+def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None, padding:bool=True, xywh:bool=False):
+    """
+    Rescale bounding boxes from one image shape to another
+    Rescales bounding boxes from img1_shape to img0_shape, accounting for padding and aspect ratio changes. Support both xyxy and 
+    xywh formats.
+    Args:
+        img1_shape (tuple): Shape of the source image (height, width)
+        boxes (torch.Tensor): Bounding boxes to rescale in format (N,4)
+        img0_shape (tuple): Shape of target image (height, width)
+        ratio_pad (tuple, optional): Tuple of (ratio, pad) for scaling of height and width. If None, calculated from image shape
+        padding (bool): Whether boxes are based on YOLO-style augmented images with padding.
+        xywh (bool): Whether box format is xywh (True) or xyxy (False)
+    Returns:
+        (torch.Tensor): Rescaled bounding boxes in the same format as input
+    """
+    if ratio_pad is None: # calculate from img0_shape
+        gain=min(n/o for n, o in zip(img1_shape, img0_shape))
+        pad_x=round((img1_shape[1]-img0_shape[1]*gain)/2 - 0.1)
+        pad_y=round((img1_shape[0]-img0_shape[0]*gain)/2 - 0.1)
+    else:
+        assert ratio_pad[0][0]==ratio_pad[0][1], f'Ratio applied to height and width must be eqaul, but got {ratio_pad[0]}'
+        gain=ratio_pad[0][0]
+        pad_x, pad_y=ratio_pad[1]
+    if padding:
+        boxes[...,0]-=pad_x # x padding
+        boxes[...,1]-=pad_y # y padding
+        if not xywh:
+            boxes[...,2]-=pad_x # x padding
+            boxes[...,3]-=pad_y # y padding
+    boxes[...,:4]/=gain
+    return boxes if xywh else clip_boxes(boxes, img0_shape)

@@ -34,14 +34,14 @@ class YOLODataset(torch.utils.data.Dataset):
         self.use_keypoints=task=='pose'
         self.use_obb=task=='obb'
         
-        if isinstance(hyp, str):
-            hyp=Path(hyp)
+        if isinstance(hyp, str):hyp=Path(hyp)
+        if isinstance(hyp, Path):
             assert hyp.is_file(), f'{hyp} does not exist'
             with open(hyp) as f: hyp=yaml.load(f, Loader=yaml.SafeLoader)
         elif not isinstance(hyp, dict): raise TypeError(f'cfg must be dict/str but got {type(hyp)}')
             
-        if isinstance(data, str):
-            data=Path(data)
+        if isinstance(data, str): data=Path(data)
+        if isinstance(data, Path):
             assert data.is_file(), f'{data} does not exist'
             with open(data, encoding="utf8") as f: self.data=yaml.load(f, Loader=yaml.SafeLoader)
         elif not isinstance(data, dict): raise TypeError(f'cfg must be dict/str but got {type(data)}')
