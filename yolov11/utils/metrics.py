@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import yaml
+import warnings
 from pathlib import Path
 from typing import Any
 from argparse import Namespace
@@ -405,7 +406,7 @@ class Metric:
         """
         Return mean of results, mp, mr, map50, map.
         """
-        return self.mp, self.mr, self.map50, self.map
+        return [self.mp, self.mr, self.map50, self.map]
 
     def class_results(self, i:int)->tuple[float,float,float,float]:
         """
@@ -810,15 +811,73 @@ class DetMetrics:
         """
         for k in self.stats.keys(): self.stats[k].append(stat[k])
 
-    def process(self, save_dir:Path=Path("."), plot:bool=False, on_plot=None)->dict[str, np.ndarray]:
+    @property
+    def keys(self)->list[str]:
         """
-        Process predicted results for object detection and update metrics.
+        Return a list of keys for accessing specific metrics
+        """
+        return ["metrics/precision(B)", "metrics/recall(B)", "metrics/mAP50(B)", "metrics/mAP50-95(B)"]
+
+    def mean_results(self)->list[float]:
+        """
+        Calculate mean precision, recall, mAP50, mAP50-95
+        """
+        return self.box.mean_results()
+
+    def class_result(self, i:int)->tuple[float, float, float, float]:
+        """
+        Return the result of evaluating the performance of an object detection model on a specific class
+        """
+        return self.box.class_results(i)
+    @property
+    def fitness(self)->float:
+        """
+        Return the fitness of box object
+        """
+        return self.box.fitness()
+
+    @property
+    def results_dict(self)->dict[str, float]:
+        """
+        Return dict of computed performance metrics and statistics
+        """
+        keys=self.keys+['fitness']
+        values=( (float(x) if hasattr(x, 'item') else x) for x in (self.mean_results() + [self.fitness]) )
+        return dict(zip(keys,values))
+
+    @property
+    def ap_class_index(self)->list:
+        """
+        Return the average precision index per class
+        """
+        return self.box.ap_class_index
+    def clear_stats(self):
+        """
+        Clear the stored statistics
+        """
+        for v in self.stats.values(): v.clear() # each v is a list of dict
+    def process(self, save_dir:Path=Path('.'), plot:bool=False)->dict[str, np.ndarray]:
+        """
+        Process predicted results for object detection and update metrics
         Args:
             save_dir (Path): Directory to save plots. Default to Path('.')
-            plot (bool): Whether to plot precision-recall curves. Default to False
-            on_plot (callable, optional): Function to call after plots are generated. Default to None
+            plot (bool): Wehther to plot precision-recall curves. Default to False
         Returns:
-            (dict[str, np.ndarray]): Dict containing concatenated statistics arrays.
+            (dict[str, np.ndarray]): Dict containing concatenated statistics arrays
         """
-        pass
+        # stats stores 
+        # - `tp` as list[np.ndarray], each np.ndarray of size Dx10 where D is the number of detections (which varies across images)
+        # - `conf` as a list[np.ndarray], each np.ndarray of size (D,) where D is the number of detections (which varies across images)
+        # - `pred_cls` a list[np.ndarray],  each np.ndarray of size (D,) where D is the number of detections (which varies across images)
+        # - `target_cls` a list[np.ndarray], each np.ndarray of size (L,) where L is the number of target classes matching detection (which varies across images)
+        # - `target_img` a list[np.ndarray], each np.ndarray of size (U,) where U<L is the number of unique target classes matching detection (which varies across images)
+        stats={k:np.concatenate(v, axis=0) for k, v in self.stats.items()}
+        if not stats: return stats
+        results=ap_per_class(tp=stats['tp'], conf=stats['conf'], pred_cls=stats['pred_cls'], target_cls=stats['target_cls'], plot=plot,
+                             save_dir=save_dir, names=self.names)[2:]
+        self.box.nc=len(self.names)
+        self.box.update(results)
+        self.nt_per_class=np.bincount(stats['target_cls'].astype(int), minlength=len(self.names)) # array of the same length as len(metrics.names)
+        self.nt_per_image=np.bincount(stats['target_img'].astype(int), minlength=len(self.names)) # array of the same length as len(metrics.names)
+        return stats
         

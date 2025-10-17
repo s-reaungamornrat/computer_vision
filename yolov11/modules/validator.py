@@ -5,6 +5,8 @@ import cv2
 import math
 import yaml
 import copy
+import json
+import warnings
 from pathlib import Path
 from typing import Any
 from argparse import Namespace
@@ -278,13 +280,111 @@ class DetectionValidator:
                                                    ratio_pad=pbatch['ratio_pad'])}
                 self.pred_to_json(predn_scaled, pbatch)
 
-    
-    def __call__(self, trainer=None,  model=None):
+    def get_stats(self)->dict[str, Any]:
+        """
+        Calculate and return metrics statistics
+        Returns:
+            (dict[str, Any]): Dict containing metrics results
+        """
+        self.metrics.process(save_dir=self.save_dir, plot=self.args.plots)
+        self.metrics.clear_stats()
+        return self.metrics.results_dict
+
+    def finalize_metrics(self)->None:
+        """
+        Set final values for metrics and confusion matrix
+        """
+        if self.args.plots:
+            for normalize in True,False:
+                self.confusion_matrix.plot(save_dir=self.save_dir, normalize=normalize)
+        self.metrics.confusion_matrix=self.confusion_matrix
+        self.metrics.save_dir=self.save_dir
+
+    def print_results(self)->None:
+        """
+        Print training/validation set metrics per class
+        """
+        # column-aligned format with string with width 22, integer with width 11, and floating point with width 11 and 3 precision digits
+        pf="%22s" + "%11i"*2 + "%11.3g"*len(self.metrics.keys) 
+        print(pf % ("all", self.seen, self.metrics.nt_per_class.sum(), *self.metrics.mean_results()))
+        
+        if self.metrics.nt_per_class.sum()==0:
+            warnings.warn(f'No label found in {self.args.task} set, cannot compute metrics without labels')
+            
+        # Print results per class
+        if self.args.verbose and not self.training and self.nc>1 and len(self.metrics.stats):
+            for i, c in enumerate(self.metrics.ap_class_index):
+                print( pf % (self.names[c], self.metrics.nt_per_image[c], self.metrics.nt_per_class[c],
+                        *self.metrics.class_result(i)) )
+                
+    def __call__(self, trainer=None, model=None):
         """
         Execute validation process, running inference on dataloader and computing performance metrics
         Args:
             trainer (object, optional): Trainer object that contains the model to validate
             model (nn.Module, optional): Model to validate if not using a trainer
         Returns:
-            (dict): Dictionary containing validation statistics
+            (dict): Dict containing validation statistics
         """
+        self.training=trainer is not None
+    
+        if self.training:
+            self.device=trainer.device
+            self.data=trainer.data
+            model=trainer.ema.ema or trainer.model
+            model=model.float()
+            self.loss=torch.zeros_like(trainer.loss_items, device=trainer.device)
+            self.args.plots&=trainer.stopper.possible_stop or (trainer.epoch==trainer.epochs-1)
+            model.eval()
+        else:
+            assert all(x is not None for x in [model, self.dataloader])
+            self.device=next(model.parameters()).device
+            imgsz=check_imgsz(self.args.imgsz, stride=model.stride)
+            if not getattr(model, 'dynamic', False): self.args.batch=1
+            if self.device.type in {'cpu', 'mps'}: self.args.workers=0 # faster since time dominated by inference, not dataloading
+            # what is imx?
+            if not getattr(model, 'dynamic', False): self.args.rect=False
+            self.stride=model.stride # used in get_dataloader() for padding
+            model.eval()
+        self.init_metrics(model)
+        self.jdict=[] # empty before each val
+        
+        for batch_i, batch in enumerate(self.dataloader):
+    
+            self.batch_i=batch_i
+            
+            # Preprocessing
+            batch=self.preprocess(batch)
+        
+            # Inference
+            with torch.no_grad(): preds=model(batch['img'])
+        
+            # Loss
+            if self.training:
+                with torch.no_grad(): self.loss+=model.loss(batch, preds)[1]
+                    
+            # Postprocess  
+            preds=self.postprocess(preds) # with bounding boxes in xyxy in pixel units
+        
+            self.update_metrics(preds, batch)
+        
+            if self.args.plots and batch_i<3:
+                fname='-'.join(Path(l).stem for l in batch['im_file'])
+                plot_labels(copy.deepcopy(batch), fname=self.save_dir/'{}-label.jpg'.format(fname),
+                            xywh=True)
+                plot_predictions(images=batch['img'].clone(), prediction=copy.deepcopy(preds), 
+                                 fname=self.save_dir/'{}-pred.jpg'.format(fname))
+        stats=self.get_stats()
+        self.finalize_metrics()
+        self.print_results()
+        if self.training:
+            model.float()
+            results={**stats, **trainer.label_loss_items(self.loss.cpu()/len(self.dataloader), prefix='val')}
+            return {k:round(float(v), 5) for k, v in results.items()} # return results as 5 decimal place floats
+        
+        if self.args.save_json and self.jdict:
+            with open(str(self.save_dir/"prediction.json"), 'w', encoding='utf-8') as f: json.dump(self.jdict, f)
+        
+        return stats
+        
+        

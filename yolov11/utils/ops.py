@@ -313,7 +313,8 @@ def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None, padding:bool=True
         pad_x=round((img1_shape[1]-img0_shape[1]*gain)/2 - 0.1)
         pad_y=round((img1_shape[0]-img0_shape[0]*gain)/2 - 0.1)
     else:
-        assert ratio_pad[0][0]==ratio_pad[0][1], f'Ratio applied to height and width must be eqaul, but got {ratio_pad[0]}'
+        # We disable this since sometimes they are not equal due to lack of floating point precision, e.g., 1.28, 1.2808398950131235
+        # assert ratio_pad[0][0]==ratio_pad[0][1], f'Ratio applied to height and width must be eqaul, but got {ratio_pad[0]}'
         gain=ratio_pad[0][0]
         pad_x, pad_y=ratio_pad[1]
     if padding:

@@ -92,7 +92,7 @@ class DetectionModel(torch.nn.Module):
         y=[] # outputs
         embed=frozenset(embed) if embed is not None else {-1}
         max_idx=max(embed)
-        print(f'In BaseModel._predict_once max_idx {max_idx} embed {embed}')
+        # print(f'In BaseModel._predict_once max_idx {max_idx} embed {embed}')
         for m in self.model:
             if m.f!=-1: # if not from previous layer
                 x=y[m.f] if isinstance(m.f, int) else [x if j==-1 else y[j] for j in m.f] # from earlier layers
