@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import yaml
+import math
 import warnings
 from pathlib import Path
 from typing import Any

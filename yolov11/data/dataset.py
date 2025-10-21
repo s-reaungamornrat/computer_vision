@@ -347,3 +347,14 @@ class YOLODataset(torch.utils.data.Dataset):
         new_batch['batch_idx']=torch.cat(new_batch['batch_idx'], 0) # 1D tensor of image index for each annotation
 
         return new_batch
+
+    def close_mosaic(self, hyp:dict)->None:
+        """
+        Disable mosaic, copy_paste, mixup and cutmix augmentations by setting their probabilities to 0.
+        Args:
+            hyp (dict): Hyperparameters for transforms
+        """
+        print('In data.dataset.YOLODataset.close_mosaic: disable mosaic and mixup augmentation')
+        hyp['mosaic']=hyp['copy_paste']=hyp['mixup']=hyp['cutmix']=0.
+        self.transforms=self.build_transforms(hyp)
+        

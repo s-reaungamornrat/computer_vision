@@ -343,6 +343,12 @@ class DFL(nn.Module):
     Integral module of Distribution Focal Loss (DFL).
 
     Proposed in Generalized Focal Loss https://ieeexplore.ieee.org/document/9792391
+
+    DFL convert regression into classification of offset bins, i.e., offsets are divided into bins. 
+    DFL estimates probabality distribution of these bins and the final offset is the weighted sum of the bin offsets by the probabilty 
+    distribution, i.e., expectation/expected offset. For example, YOLOv11 devides offsets into 16 bins and the model estimates logits 
+    which then are turned in probability (through softmax) of each offset from [0,1,2,...15]. 
+    
     """
 
     def __init__(self, c1: int = 16):
@@ -350,7 +356,7 @@ class DFL(nn.Module):
         Initialize a convolutional layer with a given number of input channels.
 
         Args:
-            c1 (int): Number of input channels.
+            c1 (int): Number of input channels, i.e., number of discrete bins
         """
         super().__init__()
         self.conv = nn.Conv2d(c1, 1, 1, bias=False).requires_grad_(False)

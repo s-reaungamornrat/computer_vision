@@ -17,5 +17,6 @@ parser.add_argument('--latest-checkpoint', type=str, default='last.pt', help='na
 parser.add_argument('--best-checkpoint', type=str, default='best.pt', help='name of best checkpoint')
 parser.add_argument('--save-period', type=int, default=100, help='epoch frequency to save model')
 parser.add_argument('--conf', type=float, default=0.01, help='confidence threshold')
+parser.add_argument('--epochs', type=int, default=100, help='maximum number of epochs')
 parser.add_argument('--save-json', action='store_true', help='save prediction-validation output in json format')
 # args=parser.parse_args(argument.split())

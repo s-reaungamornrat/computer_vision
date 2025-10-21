@@ -8,32 +8,33 @@ import torch.nn as nn
 
 from .blocks import DFL
 from .conv import Conv, DWConv
+from computer_vision.yolov11.utils.tal import dist2bbox
 
 
-def dist2bbox(distance, anchor_points, xywh=True, dim=-1):
-    """Transform distance(ltrb) to box(xywh or xyxy)."""
-    lt, rb = distance.chunk(2, dim)
-    x1y1 = anchor_points - lt
-    x2y2 = anchor_points + rb
-    if xywh:
-        c_xy = (x1y1 + x2y2) / 2
-        wh = x2y2 - x1y1
-        return torch.cat([c_xy, wh], dim)  # xywh bbox
-    return torch.cat((x1y1, x2y2), dim)  # xyxy bbox
+# def dist2bbox(distance, anchor_points, xywh=True, dim=-1):
+#     """Transform distance(ltrb) to box(xywh or xyxy)."""
+#     lt, rb = distance.chunk(2, dim)
+#     x1y1 = anchor_points - lt
+#     x2y2 = anchor_points + rb
+#     if xywh:
+#         c_xy = (x1y1 + x2y2) / 2
+#         wh = x2y2 - x1y1
+#         return torch.cat([c_xy, wh], dim)  # xywh bbox
+#     return torch.cat((x1y1, x2y2), dim)  # xyxy bbox
 
-def make_anchors(feats, strides, grid_cell_offset=0.5):
-    """Generate anchors from features."""
-    anchor_points, stride_tensor = [], []
-    assert feats is not None
-    dtype, device = feats[0].dtype, feats[0].device
-    for i, stride in enumerate(strides):
-        h, w = feats[i].shape[2:] if isinstance(feats, list) else (int(feats[i][0]), int(feats[i][1]))
-        sx = torch.arange(end=w, device=device, dtype=dtype) + grid_cell_offset  # shift x
-        sy = torch.arange(end=h, device=device, dtype=dtype) + grid_cell_offset  # shift y
-        sy, sx = torch.meshgrid(sy, sx, indexing="ij") #if TORCH_1_11 else torch.meshgrid(sy, sx)
-        anchor_points.append(torch.stack((sx, sy), -1).view(-1, 2))
-        stride_tensor.append(torch.full((h * w, 1), stride, dtype=dtype, device=device))
-    return torch.cat(anchor_points), torch.cat(stride_tensor)
+# def make_anchors(feats, strides, grid_cell_offset=0.5):
+#     """Generate anchors from features."""
+#     anchor_points, stride_tensor = [], []
+#     assert feats is not None
+#     dtype, device = feats[0].dtype, feats[0].device
+#     for i, stride in enumerate(strides):
+#         h, w = feats[i].shape[2:] if isinstance(feats, list) else (int(feats[i][0]), int(feats[i][1]))
+#         sx = torch.arange(end=w, device=device, dtype=dtype) + grid_cell_offset  # shift x
+#         sy = torch.arange(end=h, device=device, dtype=dtype) + grid_cell_offset  # shift y
+#         sy, sx = torch.meshgrid(sy, sx, indexing="ij") #if TORCH_1_11 else torch.meshgrid(sy, sx)
+#         anchor_points.append(torch.stack((sx, sy), -1).view(-1, 2))
+#         stride_tensor.append(torch.full((h * w, 1), stride, dtype=dtype, device=device))
+#     return torch.cat(anchor_points), torch.cat(stride_tensor)
 
 class Detect(nn.Module):
     """
@@ -41,6 +42,11 @@ class Detect(nn.Module):
 
     This class implements the detection head used in YOLO models for predicting bounding boxes and class probabilities.
     It supports both training and inference modes, with optional end-to-end detection capabilities.
+
+    DFL convert regression into classification of offset bins, i.e., offsets are divided into bins. 
+    DFL estimates probabality distribution of these bins and the final offset is the weighted sum of the bin offsets by the probabilty 
+    distribution, i.e., expectation/expected offset. For example, YOLOv11 devides offsets into 16 bins and the model estimates logits 
+    which then are turned in probability (through softmax) of each offset from [0,1,2,...15]. 
 
     Attributes:
         dynamic (bool): Force grid reconstruction.
@@ -100,7 +106,7 @@ class Detect(nn.Module):
         super().__init__()
         self.nc = nc  # number of classes
         self.nl = len(ch)  # number of detection layers
-        self.reg_max = 16  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
+        self.reg_max = 16  # DFL channels/number of bins (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
         self.no = nc + self.reg_max * 4  # number of outputs per anchor
         self.stride = torch.zeros(self.nl)  # strides computed during build
         c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  # channels
