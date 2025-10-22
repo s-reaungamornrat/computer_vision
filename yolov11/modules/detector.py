@@ -7,6 +7,7 @@ import torch
 from .head import Detect
 from .module import parse_model
 from .utils import initialize_weights, intersect_dicts
+from computer_vision.yolov11.utils.loss import v8DetectionLoss
 
 
 class DetectionModel(torch.nn.Module):
@@ -48,23 +49,47 @@ class DetectionModel(torch.nn.Module):
         # Init weights, biases
         initialize_weights(self)
         
-    def forward(self, x, *args, **kwargs):
+    def forward(self, x, hyp=None, profile=False, visualize=False, augment=False, embed=None):
         '''
         Perform forward pass for training or inference. If x is a dict, return the loss for training;
         otherwise, return predictions for inference
         Args:
             x (torch.Tensor | dict): Input tensor for inference or dict with image tensor and labels for training
-            *arg (Any): Variable length argument list
-            **kwargs (Any): Arbitrary keyword arguments
+            hyp (Namespace): Hyperparameter settings
+            profile (bool): Print the computation time of each layer if True
+            visualize (bool): Save the feature maps of the model if True
+            augment (bool): Augment image during prediction
+            embed (list, optional): A list of feature vectors/embeddings to return
         Returns:
             torch.Tensor: loss if x is a dict and predictions otherwise
         '''
         if isinstance(x, dict): # for cases of training and validating while training
-            return self.loss(x, *args, **kwargs)
-        return self.predict(x, *args, **kwargs)
+            return self.loss(x, hyp=hyp)
+        return self.predict(x, profile=profile, visualize=visualize, augment=augment, embed=embed)
         
-    def loss(self, x, *args, **kwargs):
-        pass
+    def loss(self, batch, preds=None, hyp=None):
+        """
+        Calculate the sum of the loss for box, cls, and dfl multiplied by batch size
+        Args:
+            batch (dict[str,Any]): Training batch containing
+                - `batch_idx` (torch.Tensor): (N,) image index of each item in the batch
+                - `bboxes` (torch.Tensor): (N,4) bounding boxes in the normalized xywh format
+                - `cls` (torch.Tensor): (N, 1) object classes
+                - `im_file` (tuple[str]): filename of images in this batch
+                - `img` (torch.Tensor): BxCxHxW where C is the number of image channels
+                - `ori_shape` (tuple[tuple[int,int]]): Tuple of tuples of original (height, width) of all images in this batch 
+                - `resized_shape` (tuple[tuple[int,int]]): Tuple of tuples of (height, width) of all input images in this batch 
+            preds (tuple|list): If tuple, the first element must be a list of features from all scales; otherwise, a list
+                of BxOxHxW features from each scale where O=4*bins + nc is the number of outputs with `bins` for the 
+                number of offset/distance bins for (left,top,right,center from the center) and nc for the number of classes. Typically, bins=16
+            hyp (Namespace): Hyperparameter settings
+        Returns:
+            (torch.Tensor): Differentiable weighted box, classification, and DFL losses, multipled by batch_size, of size (3,)
+            (torch.Tensor): Weighted box, classification, and DFL losses of size (3,)
+        """
+        if getattr(self, 'criterion', None) is None: self.criterion=v8DetectionLoss(args=hyp, model=self)
+        if preds is None: preds=self.forward(batch['img'])
+        return self.criterion(preds, batch) 
         
     def predict(self, x, profile=False, visualize=False, augment=False, embed=None):
         '''

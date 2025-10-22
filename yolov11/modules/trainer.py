@@ -13,6 +13,8 @@ import warnings
 import torch
 import torch.nn as nn
 
+import numpy as np
+
 from .detector import DetectionModel
 from .validator import DetectionValidator
 from computer_vision.yolov11.utils.check import check_imgsz
@@ -302,3 +304,78 @@ class DetectionTrainer:
             batch[k]=v.to(self.device, non_blocking=self.device.type=='cuda')
         batch['img']=batch['img'].float()/255
         return batch
+        
+    def _get_memory(self, fraction=False):
+        """
+        Get accelerator memory utilization in GB or as a fraction of total memory
+        """
+        memory,total=0,0
+        if self.device.type=='mps':
+            memory=torch.mps.driver_allocated_memory()
+            if fraction: return __import__('psutil').virtual_memory().percent/100
+        elif self.device.type!='cpu':
+            memory=torch.cuda.memory_reserved()
+            if fraction: 
+                total=torch.cuda.get_device_properties(self.device).total_memory
+        return ( (memory/total) if total>0 else 0 ) if fraction else (memory/2**30)
+
+    def _train_a_batch(self, i:int, nb:int, epoch:int, nw:int, batch:dict[str,Any], last_opt_step:int):
+        """
+        Args:
+            i (int): Iteration
+            nb (int): Number of batches, i.e., len(train_loader)
+            epoch (int): Current epoch
+            nw (int): Number of warmup iterations
+            batch (dict[str,Any]): Training batch containing
+                - `batch_idx` (torch.Tensor): (N,) image index of each item in the batch
+                - `bboxes` (torch.Tensor): (N,4) bounding boxes in the normalized xywh format
+                - `cls` (torch.Tensor): (N, 1) object classes
+                - `im_file` (tuple[str]): filename of images in this batch
+                - `img` (torch.Tensor): BxCxHxW where C is the number of image channels
+                - `ori_shape` (tuple[tuple[int,int]]): Tuple of tuples of original (height, width) of all images in this batch 
+                - `resized_shape` (tuple[tuple[int,int]]): Tuple of tuples of (height, width) of all input images in this batch 
+            last_opt_step (int): Last iteration that the optimizer was updated
+        Returns:
+            last_opt_step (int): Last iteration that the optimizer was updated
+        """
+        start_it_time=time.time()
+        # Warmup
+        ni=i+nb*epoch
+        print(ni, nw)
+        if ni<=nw:
+            xi=[0,nw]
+            self.accumulate=max(1, int(np.interp(ni, xi, [1, self.args.nbs/self.batch_size]).round()))
+            for j, x in enumerate(self.optimizer.param_groups):
+                # if optimizer is not `auto`, bias lr falls from 0.1 to lr0 while all other lrs rise from 0. to lr0;
+                # otherwise, all lrs rise from 0 to lr0
+                x['lr']=np.interp(ni, xi, [self.args.warmup_bias_lr if j==0 else 0., x['initial_lr']*self.lf(epoch)])
+                if 'momentum' in x: x['momentum']=np.interp(ni, xi, [self.args.warmup_momentum, self.args.momentum])
+        # Forward: if amp scaling is use the whole forward section has to be under with autocast(trainer.amp)
+        batch=self.preprocess_batch(batch)
+        loss, self.loss_items=self.model(batch, hyp=self.args)
+        self.loss=loss.sum()
+        # compute moving average loss
+        self.tloss=self.loss_items if self.tloss is None else (self.tloss*i+self.loss_items)/(i+1)
+        
+        # Backward
+        # self.scaler.scale(self.loss).backward()
+        self.loss.backward()
+        if ni-last_opt_step >= self.accumulate:
+            self.optimizer.step()
+            last_opt_step=ni
+        
+            # Timed stopping
+            if self.args.time: # in hours
+                self.stop=(time.time()-self.train_time_start)>(self.args.time*3600)
+                # if trainer.stop: break # training time exceed we need to check this in the loop 
+        
+        # Log   
+        loss_length=self.tloss.shape[0] if len(self.tloss.shape) else 1
+        print(("%11s"*3 + "%11.4g"*(3+loss_length)) % (f'{epoch+1}/{self.epochs}', f'{i}/{nb}',
+                                                       f'{self._get_memory():.3g}G',  # (GB) GPU memory
+                                                       *(self.tloss if loss_length>1 else torch.unsqueeze(self.tloss, 0)), # losses
+                                                       time.time()-start_it_time, # time for this iteration
+                                                       batch['cls'].shape[0], # batch size, e.g. 8
+                                                       batch['img'].shape[-1] # image size, e.g., 640
+                                                      ) )
+        return last_opt_step

@@ -196,14 +196,14 @@ class TaskAlignedAssigner(nn.Module):
         Args:
             gt_labels (torch.Tensor): Ground truth labels of shape (b, num_max_boxes, 1) where b is the batch size,
                 num_max_boxes is the maximum number of objects
-            gt_bboxes (torch.Tensor): Ground truth bounding boxes of shape (b, num_max_boxes, 4)
+            gt_bboxes (torch.Tensor): Ground truth bounding boxes of shape (b, num_max_boxes, 4) in the xyxy format in pixel units
             target_gt_idx (torch.Tensor): Indices of the assigned ground truth objects for positive anchors with shape
                 (b, n_anchors), where n_anchors is the number of feature grids from all scales 
             fg_mask (torch.Tensor): Booleam tensor of shape (b, n_anchors) indicating the positive (foreground) anchor
                 points
         Returns:
             (torch.Tensor): Long target labels for positive anchor points with shape (b, n_anchors)
-            (torch.Tensor): Target bounding boxes for positive anchor poinst with shape (b, n_anchors, 4)
+            (torch.Tensor): Target bounding boxes for positive anchor poinst with shape (b, n_anchors, 4) in the xyxy format in pixel units
             (torch.Tensor): Target scores for positive anchor points with shape (b, n_anchors, n_classes)
         """
         bs, n_max_boxes=gt_labels.shape[:2]
@@ -231,6 +231,102 @@ class TaskAlignedAssigner(nn.Module):
         target_scores=torch.where(fg_scores_mask>0, target_scores, 0)
         
         return target_labels, target_bboxes, target_scores
+
+    def _forward(self, pd_scores:torch.Tensor, pd_bboxes:torch.Tensor, anc_points:torch.Tensor, gt_labels:torch.Tensor, gt_bboxes:torch.Tensor, 
+                 mask_gt:torch.Tensor):
+        """
+        Compute the task-aligned assignment. Target scores are normalized by confidence computed as (best-IoU/best-alignment-metric) 
+        of each ground-truth. This normalizes alignment metric to be in the range 0 to 1 (keeping training numerically stable), 
+        preventing anchors with low IoU but high class confidence from distorting the gradients (balancing gradients across 
+        objects), and tying the classification confidence to localization quality (core principal of task-aligned leaning) 
+        Args:
+            pd_scores (torch.Tensor): Predicted classification scores with shape (bs, n_anchors, n_classes)
+            pd_bboxes (torch.Tensor): Predicted bounding boxes with shape (bs, n_anchors, 4) in the xyxy format in pixel units
+            anc_points (torch.Tensor): Anchor points with shape (n_anchors, 2) in pixel units
+            gt_labels (torch.Tensor): Ground truth labels with shape (bs, n_max_boxes, 1)
+            gt_bboxes (torch.Tensor): Ground truth boxes with shape (bs, n_max_boxes, 4) in the xyxy format in pixel units
+            mask_gt (torch.Tensor): Mask for valid ground truth boxes with shape (bs, n_max_boxes, 1)
+        Returns:
+            (torch.Tensor): Target labels with shape (bs, n_anchors)
+            (torch.Tensor): Target bounding boxes with shape (bs, n_anchors, 4) in the xyxy
+            (torch.Tensor): Weighted target scores with shape (bs, n_anchors, n_classes), aligning confidence with localization quality
+            (torch.Tensor): Foreground mask with shape (bs, n_anchors)
+            (torch.Tensor): Target ground truth indices with shape (bs, n_anchors)
+        """
+        # Get mask of positive anchors: each output is of size (b, n_max_objs, n_anchors)
+        #   - align_metric combines classification and IoU to reflect how well anchors fit ground-truth
+        #   - mask_pos is a positive anchor mask
+        #   - overlaps is IoU between anchors and ground-truth
+        mask_pos, align_metric, overlaps=self.get_pos_mask(pd_scores, pd_bboxes, gt_labels, gt_bboxes, anc_points, mask_gt)
+    
+        # Get ground-truth indices that yield the highest IoU for each anchors and update mask of positive anchors so that
+        # each anchor matches with just 1 ground truth, with output size (b, n_anchors) target_gt_idx, fg_mask and (b, n_max_objs, n_anchors) mask_pos
+        target_gt_idx, fg_mask, mask_pos=self.select_highest_overlaps(mask_pos, overlaps, align_metric.shape[1])
+        
+        # Assigned target to each anchor: (b, n_anchors) target_labels, (b, n_anchors, 4) target_bboxes, (b, n_anchors, nc) target_scores
+        target_labels, target_bboxes, target_scores=self.get_targets(gt_labels, gt_bboxes, target_gt_idx, fg_mask)
+    
+        # Normalize alignment metric
+        # Set alignment metric to 0 for all non-positive anchors
+        align_metric *= mask_pos # (b, n_max_objs, n_anchors)
+        # For each ground truth, find the strongest alignment score among its assigned anchors (find the maximum metric values of matched positive anchors), 
+        # giving output of size (b, n_max_objs, 1). This is used as a normalization reference
+        pos_align_metrics=align_metric.amax(dim=-1, keepdim=True) # best alignment per ground truth ranging 0 to <<< 1 for normalization reference
+        # For each ground truth, find the best IoU (the maximum IoU) of matched positive anchors (representing the most spatially accurate match), giving
+        # output of size (b, n_max_objs, 1)
+        # (b, n_max_objs, n_anchors) * (b, n_max_objs, n_anchors) -amax->(b, n_max_objs, 1)
+        pos_overlaps=(overlaps*mask_pos).amax(dim=-1, keepdim=True) # best IoU per ground truth ranging 0 to 1 for spatial reliability
+        # Scale each assignment metric by (best-IoU/best-alignment-metric), then take the maximum across GT, similar to 
+        # weighing each anchor by confidence formulating as (best-IoU/best-alignment-metric) and max of GT dimension 
+        #(align_metric*pos_overlaps / (pos_align_metrics+assigner.eps)) size
+        # (b,n_max_objs,n_anchors)*(b,n_max_objs,1) / (b,n_max_objs,1)=(b,n_max_objs,n_anchors)
+        # amax change (b,n_max_objs,n_anchors) to (b,n_anchors)
+        # unsqueeze change (b,n_anchors)  to (b,n_anchors, 1)
+        norm_align_metric=(align_metric*pos_overlaps / (pos_align_metrics+self.eps)).amax(-2).unsqueeze(-1) # smooth confidence scaling
+        # Apply normalization weight to target scores. This will make the classification loss be weighted by
+        # how well the prediction aligns spatially and semantically
+        target_scores=target_scores * norm_align_metric #  (b,n_anchors,nc)* (b,n_anchors,1)= (b,n_anchors, 1)
+        return target_labels, target_bboxes, target_scores, fg_mask.bool(), target_gt_idx
+
+    def forward(self, pd_scores:torch.Tensor, pd_bboxes:torch.Tensor, anc_points:torch.Tensor, gt_labels:torch.Tensor, gt_bboxes:torch.Tensor, 
+                mask_gt:torch.Tensor):
+        """
+        Compute the task-aligned assignment
+        Args:
+            pd_scores (torch.Tensor): Predicted classification scores with shape (bs, num_total_anchors, num_classes)
+            pd_bboxes (torch.Tensor): Predicted bounding boxes in the xyxy format in pixel units with shape (bs, num_total_anchors, 4)
+            anc_points (torch.Tensor): Anchor points in pixel units with shape (num_total_anchors, 2)
+            gt_labels (torch.Tensor): Ground truth labels with shape (bs, n_max_boxes, 1)
+            gt_bboxes (torch.Tensor): Ground truth boxes in the xyxy format in pixel units with shape (bs, n_max_boxes, 4)
+            mask_gt (torch.Tensor): Mask for valid ground truth boxes with shape (bs, n_max_boxes, 1)
+        Returns:
+            target_labels (torch.Tensor): Target labels with shape (bs, num_total_anchors)
+            target_bboxes (torch.Tensor): Target bounding boxes in the xyxy format in pixel units with shape (bs, num_total_anchors, 4)
+            target_scores (torch.Tensor): Weighted target scores with shape (bs, num_total_anchors, num_classes)
+            fg_mask (torch.Tensor): Foreground mask with shape (bs, num_total_anchors)
+            target_gt_idx (torch.Tensor): Target ground truth indices with shape (bs, num_total_anchors)
+        References:
+            https://github.com/Nioolek/PPYOLOE_pytorch/blob/master/ppyoloe/assigner/tal_assigner.py
+            https://github.com/ultralytics/ultralytics/blob/main/ultralytics/utils/tal.py
+        """
+        device=gt_bboxes.device
+        #self.bs, self.n_max_boxes=gt_bboxes.shape[:2]
+        
+        if gt_bboxes.shape[1]==0: # n_max_objs
+            return (torch.full_like(pd_scores[...,0], self.num_classes), # BxmHW filled with nc
+                    torch.zeros_like(pd_bboxes), # BxmHWx4
+                    torch.zeros_like(pd_scores), # BxmHWxnc
+                    torch.zeros_like(pd_scores[...,0]), # BxmHW filled with 0
+                    torch.zeros_like(pd_scores[...,0]), # BxmHW filled with  0
+                   )
+        try:
+            return self._forward(pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt)
+        except torch.cuda.OutOfMemoryError:
+            # Move tensors to CPU, compute, then move back to the original device
+            print('In utils.tal.TaskAlignedAssigner.forward, move tensors to CPU to compute targets before moving back to the original device')
+            cpu_tensors=[t.cpu() for t in (pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt)]
+            result=self._forward(*cpu_tensors)
+            return tuple(t.to(device) for t in result)
         
 def make_anchors(feats, strides, grid_cell_offset=0.5):
     """
@@ -241,8 +337,9 @@ def make_anchors(feats, strides, grid_cell_offset=0.5):
             or 3 pairs of height and width
         grid_cell_offset (float): Offset to move anchor points outside pixel grid
     Returns:
-        (torch.Tensor): mHWx2 anchor points where m is the number of strides, i.e., concatenation of all anchor points from all resolutions
-        (torch.Tensor): mHWx1 stride associated with each correponding anchor point
+        (torch.Tensor): mHWx2 anchor points in feature-grid units, where m is the number of strides, i.e., concatenation of all anchor points 
+            from all resolutions 
+        (torch.Tensor): mHWx1 stride (in pixel units per feature-grid units) associated with each correponding anchor point
     """
     anchor_points, stride_tensor=[],[]
     assert feats is not None
@@ -259,12 +356,14 @@ def make_anchors(feats, strides, grid_cell_offset=0.5):
 
 def dist2bbox(distance, anchor_points, xywh=True, dim=-1):
     """
-    Transform distance (left-top right bottom) to box (xywh or xyxy)
+    Transform distance (left-top right bottom) to box (xywh or xyxy). We note that the unit of distance and anchor_points must be consistent. They
+    can both be in feature-grid units or both be in pixel units. For example, v8DetectionLoss.bbox_decode call this function with distance and anchor_points
+    both in feature-grid units
     Args:
-        distance (torch.Tensor): BxmHWx4 where B is the batch size, mHW is the number of anchor points (number of 
-            feature grids from all scales), 4 is for left, top, right, bottom
-        anchor_points (torch.Tensor): mHWx2 box center reference where mHW is the number of anchor points (number of feature grids from 
-            all scales), 2 is for x, y in feature-grid units (or pixel_units)
+        distance (torch.Tensor): BxmHWx4 for distance along left,top,right bottom direction in feature-grid units, where B is the batch size, 
+            mHW is the number of anchor points (number of feature grids from all scales), 4 is for left, top, right, bottom
+        anchor_points (torch.Tensor): mHWx2 box center reference n feature-grid units where mHW is the number of anchor points (number of feature grids from 
+            all scales), 2 is for x, y in feature-grid units 
     Returns:
         (torch.Tensor): BxmHWx4 bounding box coordinates in xywh or xyxy format in the same units as anchor_points
     """
@@ -276,3 +375,19 @@ def dist2bbox(distance, anchor_points, xywh=True, dim=-1):
         wh=x2y2-x1y1
         return torch.cat([c_xy, wh], dim=dim) # xywh in feature-grid or pixel units
     return torch.cat([x1y1, x2y2], dim=dim) # xyxy in feature-grid or pixel units
+
+def bbox2dist(anchor_points:torch.Tensor, bbox:torch.Tensor, reg_max:int):
+    """
+    Transform bbox from xyxy to distance from center to left, top, right, bottom
+    Args:
+        anchor_points (torch.Tensor): Anchor points in feature-grid units with shape (b, n_anchors)
+        bbox (torch.Tensor): Bounding box locations in the xyxy format in feature-grid unit with shape 
+            (b, n_anchors, 4)
+        reg_max (int): Maximum offset bin number, e.g., `reg_max=15` for DFL with 16 bins
+    Returns:
+        (torch.Tensor): Distance from box centers (anchor points) to the left, top, right, and 
+            bottom corners (ltrb format) in feature-grid units with shape (b, n_anchors, 4), representing
+            offsets from box centers, each ranging 0 to reg_max
+    """ 
+    x1y1,x2y2=bbox.chunk(2, dim=-1) # each (b,n_anchors,2)
+    return torch.cat([anchor_points-x1y1, x2y2-anchor_points], dim=-1).clamp_(min=0, max=reg_max-0.01)

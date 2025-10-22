@@ -19,4 +19,5 @@ parser.add_argument('--save-period', type=int, default=100, help='epoch frequenc
 parser.add_argument('--conf', type=float, default=0.01, help='confidence threshold')
 parser.add_argument('--epochs', type=int, default=100, help='maximum number of epochs')
 parser.add_argument('--save-json', action='store_true', help='save prediction-validation output in json format')
+parser.add_argument('--time', type=float, default=None, help='training time in hours, over which the training shut down')
 # args=parser.parse_args(argument.split())
