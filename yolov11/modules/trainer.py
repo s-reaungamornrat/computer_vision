@@ -283,6 +283,7 @@ class DetectionTrainer:
         self.loss_names = "box_loss", "cls_loss", "dfl_loss"
         self.validator=DetectionValidator(hyperparam=self.cfg, data_cfg=self.data, dataloader=self.val_loader, save_dir=self.save_dir, 
                                           args=copy.deepcopy(self.args))
+        self.validator.args.plots=self.args.plots
         metric_keys=self.validator.metrics.keys + self.label_loss_items(prefix='val')
         self.metrics=dict(zip(metric_keys, [0]*len(metric_keys)))
         self.ema=ModelEMA(self.model)
@@ -459,6 +460,8 @@ class DetectionTrainer:
         #if not corrupted: return False
         if epoch==self.start_epoch or not self.last.exists():
             warnings.warn(f'{reason} detected but cannot recover from last.pt since this is the first epoch; let trainig continue')
+            print(f'In modules.trainer.DetectorTrainer._handle_nan_recovery self.best_fitness: {self.best_fitness}, self.fitness {self.fitness}',
+                  ' self.best_fitness>0 ', self.best_fitness>0,  ' self.fitness==0 ', self.fitness==0, ' fitness_collapse ', fitness_collapse)
             return False # Cannot recover on first epoch, let training continue
         self.nan_recovery_attempts+=1
         if self.nan_recovery_attempts>3:
