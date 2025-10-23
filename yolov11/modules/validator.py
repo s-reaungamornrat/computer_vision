@@ -317,12 +317,13 @@ class DetectionValidator:
                 print( pf % (self.names[c], self.metrics.nt_per_image[c], self.metrics.nt_per_class[c],
                         *self.metrics.class_result(i)) )
                 
-    def __call__(self, trainer=None, model=None):
+    def __call__(self, trainer=None, model=None, hyp=None):
         """
         Execute validation process, running inference on dataloader and computing performance metrics
         Args:
             trainer (object, optional): Trainer object that contains the model to validate
             model (nn.Module, optional): Model to validate if not using a trainer
+            hyp (Namespace): Hyperparameter settings
         Returns:
             (dict): Dict containing validation statistics
         """
@@ -361,7 +362,8 @@ class DetectionValidator:
         
             # Loss
             if self.training:
-                with torch.no_grad(): self.loss+=model.loss(batch, preds)[1]
+                assert hyp is not None
+                with torch.no_grad(): self.loss+=model.loss(batch=batch, preds=preds, hyp=hyp)[1]
                     
             # Postprocess  
             preds=self.postprocess(preds) # with bounding boxes in xyxy in pixel units
@@ -376,7 +378,7 @@ class DetectionValidator:
                                  fname=self.save_dir/'{}-pred.jpg'.format(fname))
         stats=self.get_stats()
         self.finalize_metrics()
-        self.print_results()
+        if not self.training: self.print_results()
         if self.training:
             model.float()
             results={**stats, **trainer.label_loss_items(self.loss.cpu()/len(self.dataloader), prefix='val')}

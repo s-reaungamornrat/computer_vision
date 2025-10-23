@@ -1,3 +1,11 @@
+## Prerequisite
+- [polars](https://pola.rs/): large scale dataframe processing
+  ```
+  pip install polars
+  ```
+
+## Implementation
+
 Always freeze .dfl module.
 ```
 for k, v in self.model.named_parameters():

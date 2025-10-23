@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from .blocks import DFL
 from .conv import Conv, DWConv
-from computer_vision.yolov11.utils.tal import dist2bbox
+from computer_vision.yolov11.utils.tal import dist2bbox, make_anchors
 
 
 # def dist2bbox(distance, anchor_points, xywh=True, dim=-1):

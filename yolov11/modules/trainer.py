@@ -4,11 +4,14 @@ from typing import Any
 from pathlib import Path
 from argparse import Namespace
 
+import gc
 import yaml
 import time
 import math
 import copy
+import numbers
 import warnings
+import datetime
 
 import torch
 import torch.nn as nn
@@ -19,7 +22,8 @@ from .detector import DetectionModel
 from .validator import DetectionValidator
 from computer_vision.yolov11.utils.check import check_imgsz
 from computer_vision.yolov11.data.dataset import YOLODataset
-from computer_vision.yolov11.utils.torch_utils import init_seeds, ModelEMA, one_cycle, EarlyStopping
+from computer_vision.yolov11.utils.plotting import plot_results, plot_images
+from computer_vision.yolov11.utils.torch_utils import init_seeds, ModelEMA, one_cycle, EarlyStopping, unwrap_model, unset_deterministic
 
 class DetectionTrainer:
 
@@ -93,11 +97,11 @@ class DetectionTrainer:
         self.loss=None
         self.tloss=None
         self.loss_names=["Loss"]
-        self.cvs=self.save_dir/"result.csv"
-        if self.cvs.exists() and not self.args.resume: self.csv.unlink(missing_ok=True)
+        self.csv=self.save_dir/"result.csv"
+        if self.csv.exists() and not self.args.resume: self.csv.unlink(missing_ok=True)
         self.plot_idx=[0,1,2]
         self.nan_recovery_attempts=0 
-        print('self.args.resume ', self.args.resume)
+        print('In modules.trainer.DetectionTrainer._init__ self.args.resume ', self.args.resume)
 
         self.world_size=0 # single GPU training
 
@@ -178,6 +182,33 @@ class DetectionTrainer:
         else: self.lf=lambda x: max( 1 - x/self.epochs, 0)*(1.-self.args.lrf)+self.args.lrf # linear
         self.scheduler=torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=self.lf)
 
+    def _load_checkpoint_state(self, checkpoint):
+        """
+        Load state_dict of optimizer, EMA, scheduler, scaler, etc.
+        Args:
+            checkpoint (dict): Dict of state_dict of training objects and training status information from the previous training round,
+                containing keys such as 
+                - `epoch` : previously trained epoch
+                - `optimizer`: state_dict of optimizer so far
+                - `scheduler`: state_dict of scheduler so far
+                - `scaler`: state_dict of scaler so far if scaler is used
+                - `ema`: state_dict of EMA and the number of updates
+                - `best_fitness`: best fitness so far
+        """
+        
+        if checkpoint.get('optimizer') is not None:
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+        if checkpoint.get('scheduler') is not None:
+            self.scheduler.load_state_dict(checkpoint['scheduler'])
+        if checkpoint.get('scaler') is not None:
+            self.scaler.load_state_dict(checkpoint['scaler'])
+        if self.ema and checkpoint.get('ema') is not None:
+            # validation with EMA creates inference tensors that cannot be updated...
+            self.ema=ModelEMA(self.model) 
+            self.ema.ema.load_state_dict(checkpoint['ema'].float().state_dict())
+            self.ema.updates=checkpoint['updates']
+        self.best_fitness=checkpoint.get('best_fitness', 0.)
+        
     def resume_training(self, checkpoint):
         """
         Resume YOLO training from given epoch and best fitness. If previos training reaches the maximum epochs `epochs`,
@@ -196,19 +227,8 @@ class DetectionTrainer:
         if checkpoint is None or not self.args.resume: return
         start_epoch=checkpoint.get('epoch',-1)+1
         print(f'Resume training from epoch {start_epoch+1} to {self.epochs} total epochs')
-        if checkpoint.get('optimizer') is not None:
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
-        if checkpoint.get('scheduler') is not None:
-            self.scheduler.load_state_dict(checkpoint['scheduler'])
-        if checkpoint.get('scaler') is not None:
-            self.scaler.load_state_dict(checkpoint['scaler'])
-        if self.ema and checkpoint.get('ema') is not None:
-            # validation with EMA creates inference tensors that cannot be updated...
-            self.ema=ModelEMA(trainer.model) 
-            self.ema.ema.load_state_dict(checkpoint['ema'].float().state_dict())
-            self.ema.updates=checkpoint['updates']
-        self.best_fitness=checkpoint.get('best_fitness', 0.)
-        
+        self._load_checkpoint_state(checkpoint)
+
         if self.epochs < start_epoch:
             print(f'Model completed training for {checkpoint["epoch"]} epochs.')
             self.stop=True
@@ -222,7 +242,7 @@ class DetectionTrainer:
         self.model=DetectionModel(cfg=self.args.model_cfg, ch=self.inch)
         checkpoint=None
         if self.args.resume and self.last.is_file():
-            checkpoint=torch.load(self.last, map_location=self.device, weights_only=True)
+            checkpoint=torch.load(self.last, map_location=self.device, weights_only=False)
             self.model.load_state_dict(checkpoint['model'])
         self.model=self.model.to(self.device)
         self.model.names=self.data["names"]
@@ -260,6 +280,7 @@ class DetectionTrainer:
                                                num_workers=self.args.worker, collate_fn=YOLODataset.collate_fn, pin_memory=False, drop_last=False, 
                                                timeout=0, worker_init_fn=None, prefetch_factor=None, persistent_workers=False)
         # Validator
+        self.loss_names = "box_loss", "cls_loss", "dfl_loss"
         self.validator=DetectionValidator(hyperparam=self.cfg, data_cfg=self.data, dataloader=self.val_loader, save_dir=self.save_dir, 
                                           args=copy.deepcopy(self.args))
         metric_keys=self.validator.metrics.keys + self.label_loss_items(prefix='val')
@@ -319,6 +340,15 @@ class DetectionTrainer:
                 total=torch.cuda.get_device_properties(self.device).total_memory
         return ( (memory/total) if total>0 else 0 ) if fraction else (memory/2**30)
 
+    def _model_train(self):
+        """ Set to model to training mode """
+        self.model.train()
+        # Freeze BN stats if BN is in freeze layers (typically BN is not frozen layers, i.e., BN is not in self.freeze_layer_names)
+        for n, m in self.model.named_modules():
+            if any(filter(lambda f: f in n, self.freeze_layer_names)) and isinstance(m, nn.BatchNorm2d):
+                m.eval()
+
+
     def _train_a_batch(self, i:int, nb:int, epoch:int, nw:int, batch:dict[str,Any], last_opt_step:int):
         """
         Args:
@@ -341,7 +371,6 @@ class DetectionTrainer:
         start_it_time=time.time()
         # Warmup
         ni=i+nb*epoch
-        print(ni, nw)
         if ni<=nw:
             xi=[0,nw]
             self.accumulate=max(1, int(np.interp(ni, xi, [1, self.args.nbs/self.batch_size]).round()))
@@ -371,11 +400,262 @@ class DetectionTrainer:
         
         # Log   
         loss_length=self.tloss.shape[0] if len(self.tloss.shape) else 1
-        print(("%11s"*3 + "%11.4g"*(3+loss_length)) % (f'{epoch+1}/{self.epochs}', f'{i}/{nb}',
-                                                       f'{self._get_memory():.3g}G',  # (GB) GPU memory
-                                                       *(self.tloss if loss_length>1 else torch.unsqueeze(self.tloss, 0)), # losses
-                                                       time.time()-start_it_time, # time for this iteration
-                                                       batch['cls'].shape[0], # batch size, e.g. 8
-                                                       batch['img'].shape[-1] # image size, e.g., 640
-                                                      ) )
+        if isinstance(self.args.print_freq, numbers.Number) and (i+1)%self.args.print_freq==0:
+            print('Epoch: {}, Iter: {}/{}({:.2f}%), Mem: {}GB, Box: {:.3f}, Cls: {:.3f}, DFL: {:.3f}, Time: {:.2f}s, N:{}, Img:{}'.format(epoch+1, i, nb,
+                                          100*i/nb, self._get_memory(), self.tloss[0] if len(self.tloss)>0 else 0, self.tloss[1] if len(self.tloss)>1 else 0,
+                                          self.tloss[2] if len(self.tloss)>2 else 0, time.time()-start_it_time, batch['cls'].shape[0], batch['img'].shape[-1]))
+            # print(("%11s"*3 + "%11.4g"*(3+loss_length)) % (f'{epoch+1}/{self.epochs}', f'{i}/{nb}',
+            #                                                f'{self._get_memory():.3g}G',  # (GB) GPU memory
+            #                                                *(self.tloss if loss_length>1 else torch.unsqueeze(self.tloss, 0)), # losses
+            #                                                time.time()-start_it_time, # time for this iteration
+            #                                                batch['cls'].shape[0], # number of objects, e.g. 8
+            #                                                batch['img'].shape[-1] # image size, e.g., 640
+            #                                               ) )
+
+        if self.args.plots and ni in self.plot_idx:
+            print(f'In modules.trainer.DetectionTrainer._train_a_batch plot training samples: self.plot_idx {self.plot_idx}')
+            self.plot_training_samples(batch, ni)
         return last_opt_step
+
+    def _clear_memory(self, threshold:float=None):
+        """
+        Clear accelerator memory by calling garbage collector and emptying cache
+        Args:
+            threshold (float): Maximum fraction of memory usage allowed
+        """
+        if threshold:
+            assert 0<= threshold<=1, f'Threshold must be between 0 and 1, but got {threshold}'
+            if self._get_memory(fraction=True)<=threshold: return
+        gc.collect()
+        if self.device.type=='mps': torch.mps.empty_cache()
+        elif self.device.type=='cpu': return
+        else: torch.cuda.empty_cache()
+
+    def validate(self):
+        """
+        Run validation on val set using self.validator
+        Returns:
+            metrics (dict): Dict of validation metrics
+            fitness (float): Fitness score for validation
+        """
+        # if DDP, we have to sync EMA buffer from rank 0 to all ranks 
+        # see https://github.com/ultralytics/ultralytics/blob/main/ultralytics/engine/trainer.py#L690
+        metrics=self.validator(trainer=self, hyp=self.args)
+        if metrics is None: return None, None
+        fitness=metrics.pop('fitness', -self.loss.detach().cpu().numpy()) # use loss as fitness measure if not found
+        if not self.best_fitness or self.best_fitness < fitness:
+            self.best_fitness=fitness
+        return metrics, fitness
+        
+    def _handle_nan_recovery(self, epoch):
+        """
+        Detect and recover from NaN/Inf loss and fitness collapse by loading last checkpoint
+        """
+        loss_nan=self.loss is not None and not self.loss.isfinite()
+        fitness_nan=self.fitness is not None and not np.isfinite(self.fitness)
+        fitness_collapse=self.best_fitness and self.best_fitness>0 and self.fitness==0
+        corrupted=loss_nan and (fitness_nan or fitness_collapse)
+        reason='Loss NaN/Inf' if loss_nan else 'Fitness NaN/Inf' if fitness_nan else 'Fitness collapse'
+        #if not corrupted: return False
+        if epoch==self.start_epoch or not self.last.exists():
+            warnings.warn(f'{reason} detected but cannot recover from last.pt since this is the first epoch; let trainig continue')
+            return False # Cannot recover on first epoch, let training continue
+        self.nan_recovery_attempts+=1
+        if self.nan_recovery_attempts>3:
+            raise RuntimeError(f'Training failed: NaN persisted for {self.nan_recovery_attempts} epochs')
+        warnings.warn(f'{reason} detected (attempt {self.nan_recovery_attempts}/3), recovering from last.pt')
+        self._model_train() # set model to train mode before loading checkpoints to avoid inference tensor error
+        checkpoint=torch.load(self.last, map_location=self.device, weights_only=False)
+        ema_state=checkpoint['ema'].float().state_dict()
+        if not all(torch.isfinite(v).all() for v in ema_state.values() if isinstance(v, torch.Tensor)):
+            raise RuntimeError(f'Checkpoint {self.last} is corrupted with NaN/Inf weights')
+        unwrap_model(self.model).load_state_dict(ema_state) # Load EMA weights to model
+        self._load_checkpoint_state(checkpoint) # load optimizer, scaler, scheduler, EMA, best_fitness
+        del checkpoint, ema_state
+        self.scheduler.last_epoch=epoch-1
+        return True
+
+    def save_metrics(self, metrics:dict[str, float]):
+        """
+        Save training metrics to a CSV file
+        Args:
+            metrics (dict[str, float]): Pairs of metric names and values
+        """
+        keys, vals=list(metrics.keys()), list(metrics.values())
+        n=len(metrics)+2 # number of columns
+        t=time.time()-self.train_time_start
+        self.csv.parent.mkdir(parents=True, exist_ok=True) # ensure that parent directory exists
+        s='' if self.csv.exists() else (("%s,"*n % tuple(['epoch', 'time']+keys)).rstrip(',')+'\n') # header
+        with open(self.csv, 'a', encoding='utf-8') as f:
+            f.write(s + ('%.6g,'*n % tuple([self.epoch+1, t]+vals)).rstrip(',') + '\n')
+
+    def save_model(self):
+        """
+        Save model training checkpoints with additional metadata
+        """    
+        state_dict={'epoch':self.epoch, 'best_fitness':self.best_fitness, 'model':self.model.state_dict(),
+                    'ema':copy.deepcopy(unwrap_model(self.ema.ema)), 'updates':self.ema.updates, 
+                    'optimizer':copy.deepcopy(self.optimizer.state_dict()), 
+                    'scheduler':copy.deepcopy(self.scheduler.state_dict()),
+                    'train_args':vars(self.args), 'train_metrics':{**self.metrics, **{'fitness':self.fitness}},
+                    'date':datetime.datetime.now().isoformat()}
+        
+        self.wdir.mkdir(parents=True, exist_ok=True) # ensure weights directory exists
+        torch.save(state_dict, self.last)
+        
+        if self.best_fitness == self.fitness: torch.save(state_dict, self.best)
+
+    def _epoch_log(self, epoch:int):
+        """
+        Create an epoch-log text for progress printing
+        Args:
+            epoch (int): Current epoch
+        Returns:
+            (str): Epoch training validation metrics and time
+        """
+        metric_maps={'precision':'P', 'recall':'R', 'fitness':'F'}
+        log=f'Epoch: {epoch+1}/{self.epochs}, Time: {self.epoch_time/60:.2f} mins, F: {self.fitness:.2f}, '
+        # We shorten the metrics keys from ['metrics/precision(B)', 'metrics/recall(B)', 'metrics/mAP50(B)', 'metrics/mAP50-95(B)',
+        # 'val/box_loss', 'val/cls_loss', 'val/dfl_loss'] to [P, R, mAP50, mAP50-95, box, cls, dfl]
+        for k, v in self.metrics.items():
+            k=k.split('/')[-1].replace('(B)', '').replace('_loss', '')
+            log+='{}:{:.2f}, '.format(metric_maps[k] if k in metric_maps else k, v)
+        lr=[None,]*len(self.lr)
+        for k, v in self.lr.items(): lr[int(k[-1])]=v
+        log+='lr: ' + '-'.join(f'{x:.5f}' for x in lr)
+        
+        return log
+
+    def final_eval(self):
+        """
+        Perform final evaluation and validation for object detection YOLO model
+        """
+        checkpoint=torch.load(self.best if self.best.exists() else self.last, map_location=self.device, weights_only=True)
+        ema_state=checkpoint['ema'].float().state_dict()
+        if not all(torch.isfinite(v).all() for v in ema_state.values() if isinstance(v, torch.Tensor)):
+            raise RuntimeError(f'Checkpoint {self.best if self.best.exists() else self.last} is corrupted with NaN/Inf weights')
+        unwrap_model(self.model).load_state_dict(ema_state) # Load EMA weights to model
+        self.model.eval()
+        del ema_state
+        self.validator.args.plots=trainer.args.plots
+        self.metrics=self.validator(model=self.model)
+        self.metrics.pop('fitness', None)
+
+    def plot_metrics(self):
+        """
+        Plot metrics from a CSV file
+        """
+        plot_results(file=self.csv) # save results.png
+
+    def plot_training_samples(self, batch: dict[str, Any], ni: int) -> None:
+        """
+        Plot training samples with their annotations.
+
+        Args:
+            batch (dict[str, Any]): Dictionary containing batch data.
+            ni (int): Number of iterations.
+        """
+        plot_images(
+            labels=batch,
+            paths=batch["im_file"],
+            fname=self.save_dir / f"train_batch{ni}.jpg"
+        )
+        
+    def train(self):
+        """
+        Train model for the specified maximum number of epochs
+        Args: 
+            epoch (int): Current epoch
+        """
+        self._setup_train()
+        
+        nb=len(self.train_loader) # number of batches
+        nw=max(round(nb*self.args.warmup_epochs), 100) if self.args.warmup_epochs>0 else -1 # warmup iterations
+        last_opt_step=-1 # schedule start position
+        self.epoch_time=None
+        self.epoch_time_start=time.time() # in seconds
+        self.train_time_start=time.time()
+        print(f'Image sizes {self.args.imgsz} train\n'
+              f'Using {self.train_loader.num_workers * (self.world_size or 1)} dataloader workers\n'
+              f'Logging results to {self.save_dir}\n'
+              "Starting training for "+(f'{self.args.time} hours ...' if self.args.time else f'{self.epochs} epochs ...')
+             )
+        if self.args.close_mosaic>0: # number of epochs before the end to turning off mosaic
+            base_idx=(self.epochs-self.args.close_mosaic)*nb # number of batches trained with mosaic
+            self.plot_idx.extend([base_idx, base_idx+1, base_idx+2])
+            
+        epoch=self.start_epoch
+        self.optimizer.zero_grad() # zero any resumed gradients 
+        while True:
+            self.epoch=epoch
+            with warnings.catch_warnings():
+                # Suppress `Detected lr_scheduler.step() nefore optimizer.step()`
+                warnings.simplefilter('ignore') 
+                self.scheduler.step()
+        
+            # Set to model to training mode
+            self._model_train() # set model to train mode
+            
+            if epoch==(self.epochs-self.args.close_mosaic):
+                self._close_dataloader_mosaic()
+                # Do we need to call this to reset the data loader
+                # self.train_loader.iterator = self.train_loader._get_iterator()
+                
+            self.tloss=None
+            for i, batch in enumerate(self.train_loader):
+                last_opt_step=self._train_a_batch(i=i, nb=nb, epoch=epoch, nw=nw, batch=batch, last_opt_step=last_opt_step)
+                if self.stop: break # training time exceed 
+        
+            # for logger
+            self.lr={f'lr/pg{ir}': x['lr'] for ir, x in enumerate(self.optimizer.param_groups)}
+        
+            final_epoch=epoch+1>=self.epochs
+            self.ema.update_attr(self.model, include=['yaml', 'names', 'stride']) # we do not have nc, args, class_weights
+            
+            # Validation
+            if self.args.val or final_epoch or self.stopper.possible_stop or self.stop:
+                self._clear_memory(threshold=0.5) # prevent VRAM spike
+                self.metrics, self.fitness=self.validate()
+        
+            # NaN recovery
+            if self._handle_nan_recovery(epoch): continue
+            self.nan_recovery_attempts=0
+        
+            # Record metrics
+            self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr})
+        
+            self.stop|=self.stopper(epoch+1, self.fitness) or final_epoch
+            if self.args.time: self.stop |= (time.time()-self.train_time_start) > (self.args.time*3600)
+            
+            # Save model
+            if self.args.save or final_epoch: self.save_model()
+            
+            # Scheduler
+            t=time.time()
+            self.epoch_time=t-self.epoch_time_start
+            self.epoch_time_start=t
+            # Below allow training based on training-time limit instead of maximum number of epochs
+            # if trainer.args.time: 
+            #     mean_epoch_time=(t-trainer.train_time_start)/(epoch-trainer.start_epoch+1) # time requires to run each epoch
+            #     trainer.epochs=trainer.args.epochs=math.ceil(trainer.args.time*3600/mean_epoch_time) # updated maximum number of epochs
+            #     trainer._setup_scheduler() # recreate a scheduler based on the new maximum number of epochs
+            #     trainer.scheduler.last_epoch=trainer.epoch # resume from current epoch of LR curve
+            #     trainer.stop |= epoch >=trainer.epochs # stop if exceed epochs
+            
+            # Early stopping: for DDP, must break all rank see 
+            # https://github.com/ultralytics/ultralytics/blob/main/ultralytics/engine/trainer.py#L355
+
+            # Print epoch
+            print(self._epoch_log(epoch), flush=True)
+            
+            if self.stop: break
+            epoch+=1
+
+        seconds=time.time()-self.train_time_start
+        print(f'\n{epoch-self.start_epoch+1} epochs completed in {seconds/3600:.3f} hours')
+
+        # Do final val with best.pt
+        self.final_eval()
+        if self.args.plots: self.plot_metrics()
+        self._clear_memory()
+        unset_deterministic()

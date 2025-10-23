@@ -68,7 +68,7 @@ class YOLODataset(torch.utils.data.Dataset):
         # Buffer storing indices to `self.ims` to access images for mosaic augmentation
         self.buffer=[] # buffer size = batch size
         self.max_buffer_length=min((self.ni,batch_size*8, 1000)) if self.augment else 0
-        print('max_buffer_length ', self.max_buffer_length, ' ni ', self.ni)
+        print('In data.dataset.YOLODataset.__init__ max_buffer_length ', self.max_buffer_length, ' ni ', self.ni)
 
         # Below lists store images, original-image size, and size of images after resize
         self.ims, self.im_hw0, self.im_hw=[None,]*self.ni, [None,]*self.ni, [None,]*self.ni

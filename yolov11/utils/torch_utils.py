@@ -161,3 +161,13 @@ class ModelEMA:
             exclude (tuple, optional): Attributes to exclude
         """
         if self.enabled: copy_attr(self.ema, model, include, exclude)
+
+
+def unset_deterministic():
+    """
+    Unset all the configurations applied for deterministic training
+    """
+    torch.use_deterministic_algorithms(False)
+    torch.backends.cudnn.deterministic=False
+    os.environ.pop('CUBLAS_WORKSPACE_CONFIG', None)
+    os.environ.pop('PYTHONHASHSEED', None)
