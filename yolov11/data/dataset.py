@@ -277,6 +277,7 @@ class YOLODataset(torch.utils.data.Dataset):
         Returns:
             (Compose): Composed transform
         """
+        if not isinstance(hyp, dict): hyp=vars(hyp)
         if self.augment:
             if self.rect: hyp['mosaic']=hyp['mixup']=hyp['cutmix']=0.0
             mosaic=Mosaic(self, imgsz=self.imgsz, p=hyp['mosaic'], n=4)
@@ -355,6 +356,7 @@ class YOLODataset(torch.utils.data.Dataset):
             hyp (dict): Hyperparameters for transforms
         """
         print('In data.dataset.YOLODataset.close_mosaic: disable mosaic and mixup augmentation')
-        hyp['mosaic']=hyp['copy_paste']=hyp['mixup']=hyp['cutmix']=0.
+        try: hyp['mosaic']=hyp['copy_paste']=hyp['mixup']=hyp['cutmix']=0.
+        except: hyp.mosaic=hyp.copy_paste=hyp.mixup=hyp.cutmix=0
         self.transforms=self.build_transforms(hyp)
         

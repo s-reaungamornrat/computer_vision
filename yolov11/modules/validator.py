@@ -335,7 +335,7 @@ class DetectionValidator:
             model=trainer.ema.ema or trainer.model
             model=model.float()
             self.loss=torch.zeros_like(trainer.loss_items, device=trainer.device)
-            self.args.plots&=trainer.stopper.possible_stop or (trainer.epoch==trainer.epochs-1)
+            #self.args.plots&=trainer.stopper.possible_stop or (trainer.epoch==trainer.epochs-1)
             model.eval()
         else:
             assert all(x is not None for x in [model, self.dataloader])
@@ -372,10 +372,10 @@ class DetectionValidator:
         
             if self.args.plots and batch_i<3:
                 fname='-'.join(Path(l).stem for l in batch['im_file'])
-                plot_labels(copy.deepcopy(batch), fname=self.save_dir/'{}-label.jpg'.format(fname),
+                plot_labels(copy.deepcopy(batch), fname=self.save_dir/'{}-val-label.jpg'.format(fname),
                             xywh=True)
                 plot_predictions(images=batch['img'].clone(), prediction=copy.deepcopy(preds), 
-                                 fname=self.save_dir/'{}-pred.jpg'.format(fname))
+                                 fname=self.save_dir/'{}-val-pred.jpg'.format(fname))
         stats=self.get_stats()
         self.finalize_metrics()
         if not self.training: self.print_results()
