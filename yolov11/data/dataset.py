@@ -284,7 +284,8 @@ class YOLODataset(torch.utils.data.Dataset):
             affine=RandomPerspective(degrees=hyp['degrees'], translate=hyp['translate'],
                                     scale=hyp['scale'], shear=hyp['shear'], perspective=hyp['perspective'],
                                     pre_transform=None)
-            pre_transform=Compose([mosaic, affine])
+            pre_transform=Compose([mosaic, affine]) if hyp['mosaic']>0 else Compose([mosaic, affine,
+                                                                                    LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False) ])
             transforms=Compose([pre_transform,
                                MixUp(self, pre_transform=pre_transform, p=hyp['mixup']),
                                CutMix(self, pre_transform=pre_transform, p=hyp['cutmix']),

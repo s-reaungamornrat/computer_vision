@@ -532,14 +532,14 @@ class DetectionTrainer:
         """
         Perform final evaluation and validation for object detection YOLO model
         """
-        checkpoint=torch.load(self.best if self.best.exists() else self.last, map_location=self.device, weights_only=True)
+        checkpoint=torch.load(self.best if self.best.exists() else self.last, map_location=self.device, weights_only=False)
         ema_state=checkpoint['ema'].float().state_dict()
         if not all(torch.isfinite(v).all() for v in ema_state.values() if isinstance(v, torch.Tensor)):
             raise RuntimeError(f'Checkpoint {self.best if self.best.exists() else self.last} is corrupted with NaN/Inf weights')
         unwrap_model(self.model).load_state_dict(ema_state) # Load EMA weights to model
         self.model.eval()
         del ema_state
-        self.validator.args.plots=trainer.args.plots
+        #self.validator.args.plots=self.args.plots
         self.metrics=self.validator(model=self.model)
         self.metrics.pop('fitness', None)
 
