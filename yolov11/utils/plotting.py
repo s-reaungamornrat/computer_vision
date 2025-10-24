@@ -847,7 +847,7 @@ def plot_results(file:str='path/to/results.csv', dir:str=''):
             for i, j in enumerate(columns):
                 y=data.select(j).to_numpy().flatten().astype('float')
                 ax[i].plot(x,y,marker='.',label=f.stem, linewidth=2,markersize=8) # actual results
-                ax[i].plot(x, gaussian_filter1d(y, signma=3), ':', label='smooth', linewidth=2) # smooth line
+                ax[i].plot(x, gaussian_filter1d(y, sigma=3), ':', label='smooth', linewidth=2) # smooth line
                 ax[i].set_title(j, fontsize=12)
         except Exception as e:
             print(f'Plotting error for {f}:{e}')

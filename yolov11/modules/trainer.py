@@ -97,7 +97,7 @@ class DetectionTrainer:
         self.loss=None
         self.tloss=None
         self.loss_names=["Loss"]
-        self.csv=self.save_dir/"result.csv"
+        self.csv=self.save_dir/"results.csv"
         if self.csv.exists() and not self.args.resume: self.csv.unlink(missing_ok=True)
         self.plot_idx=[0,1,2]
         self.nan_recovery_attempts=0 
