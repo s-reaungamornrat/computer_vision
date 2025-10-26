@@ -910,8 +910,8 @@ class RandomPerspective:
             filtered_segments.append(xy)
             indices.append(i)
             
-        bboxes=np.stack(bboxes, 0) # Nx4
-        segments=np.stack(filtered_segments, 0)
+        bboxes=np.stack(bboxes, 0) if len(bboxes)>0 else np.zeros((0,4), dtype=float)# Nx4
+        segments=np.stack(filtered_segments, 0) if len(filtered_segments)>0 else np.zeros((0,0,2), dtype=float)# NxMx2
         #print('bboxes ', bboxes.shape, ' segments ', segments.shape)
         # bounding boxes have been clipped to be inside images but segments have not, so we use bounding boxes to
         # clip segments
@@ -1015,7 +1015,12 @@ class RandomPerspective:
         keypoints=instances.keypoints
         # Update bboxes if there are segments
         indices=None # indices to valid boxes after transformation
-        if len(segments): bboxes, segments, indices=self.apply_segments(segments, M)
+        if len(segments)>0: 
+            #print(f'In data.augment.__call__ len(segments) {len(segments)} ')
+            bboxes_, segments, indices=self.apply_segments(segments, M)
+            #print(f'\tIn data.augment.__call__ len(segments) {len(segments)} bboxes {bboxes.shape} bboxes_ {len(bboxes_)} indices {len(indices)}')
+            if len(bboxes_)>0: bboxes=bboxes_
+            #print(f'\tIn data.augment.__call__ len(bboxes) {len(bboxes)} ')
         if keypoints is not None: keypoints=self.apply_keypoints(keypoints, M)
         new_instances=Instances(bboxes, segments, keypoints, bbox_format='xyxy', normalized=False)
         # Clip
@@ -1024,7 +1029,7 @@ class RandomPerspective:
         # Filter instances
         instances.scale(scale_w=scale, scale_h=scale, bbox_only=True)
         box1=instances.bboxes
-        if indices is not None:
+        if indices is not None and len(indices)>0:
             box1=box1[indices]
             cls=cls[indices]
         # Make the bboxes have the same scale with new_bboxes

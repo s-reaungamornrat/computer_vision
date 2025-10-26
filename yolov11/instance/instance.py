@@ -370,8 +370,9 @@ class Instances:
         self.bboxes[:, [1, 3]] = self.bboxes[:, [1, 3]].clip(0, h)
         if ori_format != "xyxy":
             self.convert_bbox(format=ori_format)
-        self.segments[..., 0] = self.segments[..., 0].clip(0, w)
-        self.segments[..., 1] = self.segments[..., 1].clip(0, h)
+        if len(self.segments)>0 and self.segments.shape[1]>0: # NxMx2 whre N is the number of segments, M is the number of points
+            self.segments[..., 0] = self.segments[..., 0].clip(0, w)
+            self.segments[..., 1] = self.segments[..., 1].clip(0, h)
         if self.keypoints is not None:
             # Set out of bounds visibility to zero
             self.keypoints[..., 2][
@@ -438,7 +439,8 @@ class Instances:
         assert isinstance(instances_list, (list, tuple))
         if not instances_list:
             return cls(np.empty(0))
-        assert all(isinstance(instance, Instances) for instance in instances_list)
+        # print(f'In instance.instance.Instances [isinstance(instance, Instances) for instance in instances_list] {[isinstance(instance, Instances) for instance in instances_list]}, [type(instance) for instance in instances_list] {[type(instance).__name__ for instance in instances_list]}, [instance.__class__.__name__ for instance in instances_list] {[instance.__class__.__name__ for instance in instances_list]}, [instance.__class__.__name__=="Instances" for instance in instances_list] {[instance.__class__.__name__=="Instances" for instance in instances_list]}')
+        assert all(instance.__class__.__name__=='Instances' for instance in instances_list), f'All must be instance but got {[type(instance) for instance in instances_list]}'
 
         if len(instances_list) == 1:
             return instances_list[0]
