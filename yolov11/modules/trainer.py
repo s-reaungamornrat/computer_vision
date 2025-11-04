@@ -79,7 +79,9 @@ class DetectionTrainer:
 
         # setting worker=0 yields faster CPU training as time dominated by inference, not dataloading
         if self.device.type in {'cpu', 'mps'}: self.args.worker=0
-
+        else: self.args.worker=args.workers or 1
+        print(f'In modules.trainer.DetectionTrainer.__init__ self.args.worker {self.args.worker}')
+        
         # check data 
         self.args.root=Path(self.args.root)
         for dirname in [args.train_image_dirname, args.train_label_dirname, args.val_image_dirname, args.val_label_dirname]:
@@ -385,11 +387,15 @@ class DetectionTrainer:
         self.loss=loss.sum()
         # compute moving average loss
         self.tloss=self.loss_items if self.tloss is None else (self.tloss*i+self.loss_items)/(i+1)
+        if self.tloss.isnan().any() or self.tloss.isinf().any():
+            print(f'In modules.trainer._train_a_batch self.tloss.isnan() {self.tloss.isnan()} or isinf {self.tloss.isinf()}')
+            raise ValueError(f'In modules.trainer._train_a_batch self.tloss.isnan() {self.tloss.isnan()} or isinf {self.tloss.isinf()}')
         
         # Backward
         # self.scaler.scale(self.loss).backward()
         self.loss.backward()
         if ni-last_opt_step >= self.accumulate:
+            if self.args.grad_clip is not None: torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
             self.optimizer.step()
             last_opt_step=ni
         
@@ -401,7 +407,7 @@ class DetectionTrainer:
         # Log   
         loss_length=self.tloss.shape[0] if len(self.tloss.shape) else 1
         if isinstance(self.args.print_freq, numbers.Number) and (i+1)%self.args.print_freq==0:
-            print('Epoch: {}, Iter: {}/{}({:.2f}%), Mem: {}GB, Box: {:.3f}, Cls: {:.3f}, DFL: {:.3f}, Time: {:.2f}s, N:{}, Img:{}'.format(epoch+1, i, nb,
+            print('Epoch: {}, Iter: {}/{}({:.2f}%), Mem: {:.3f}GB, Box: {:.3f}, Cls: {:.3f}, DFL: {:.3f}, Time: {:.2f}s, N:{}, Img:{}'.format(epoch+1, i, nb,
                                           100*i/nb, self._get_memory(), self.tloss[0] if len(self.tloss)>0 else 0, self.tloss[1] if len(self.tloss)>1 else 0,
                                           self.tloss[2] if len(self.tloss)>2 else 0, time.time()-start_it_time, batch['cls'].shape[0], batch['img'].shape[-1]))
             # print(("%11s"*3 + "%11.4g"*(3+loss_length)) % (f'{epoch+1}/{self.epochs}', f'{i}/{nb}',

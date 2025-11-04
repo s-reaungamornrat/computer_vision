@@ -372,9 +372,14 @@ class DetectionValidator:
         
             if self.args.plots and batch_i<3:
                 fname='-'.join(Path(l).stem for l in batch['im_file'])
-                plot_labels(copy.deepcopy(batch), fname=self.save_dir/'{}-val-label.jpg'.format(fname),
+                copied_batch=copy.deepcopy(batch)
+                copied_batch={k:(v.detach().cpu() if isinstance(v, torch.Tensor) else v) for k, v in copied_batch.items()}
+                plot_labels(copied_batch, fname=self.save_dir/'{}-val-label.jpg'.format(fname),
                             xywh=True)
-                plot_predictions(images=batch['img'].clone(), prediction=copy.deepcopy(preds), 
+                copied_preds=copy.deepcopy(preds)
+                for i in range(len(copied_preds)):
+                    copied_preds[i]={k:(v.detach().cpu() if isinstance(v, torch.Tensor) else v) for k, v in copied_preds[i].items()}
+                plot_predictions(images=batch['img'].clone().cpu(), prediction=copied_preds, 
                                  fname=self.save_dir/'{}-val-pred.jpg'.format(fname))
         stats=self.get_stats()
         self.finalize_metrics()

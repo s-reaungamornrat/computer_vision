@@ -20,5 +20,6 @@ parser.add_argument('--conf', type=float, default=0.01, help='confidence thresho
 parser.add_argument('--epochs', type=int, default=100, help='maximum number of epochs')
 parser.add_argument('--save-json', action='store_true', help='save prediction-validation output in json format')
 parser.add_argument('--time', type=float, default=None, help='training time in hours, over which the training shut down')
+parser.add_argument('--grad-clip', type=float, default=None, help='maximum gradient magnitude before clipping')
 parser.add_argument('--print-freq', type=int, default=10, help='iteration frequency to print training progress')
 # args=parser.parse_args(argument.split())
