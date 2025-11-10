@@ -576,6 +576,9 @@ class DetectionTrainer:
             epoch (int): Current epoch
         """
         self._setup_train()
+        if self.start_epoch>=self.epochs:
+            print("Hit desired training epochs--break")
+            return
         
         nb=len(self.train_loader) # number of batches
         nw=max(round(nb*self.args.warmup_epochs), 100) if self.args.warmup_epochs>0 else -1 # warmup iterations

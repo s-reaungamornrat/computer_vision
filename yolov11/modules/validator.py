@@ -332,7 +332,7 @@ class DetectionValidator:
         if self.training:
             self.device=trainer.device
             self.data=trainer.data
-            model=trainer.ema.ema or trainer.model
+            model=trainer.model # trainer.ema.ema or trainer.model --EMA does not work
             model=model.float()
             self.loss=torch.zeros_like(trainer.loss_items, device=trainer.device)
             #self.args.plots&=trainer.stopper.possible_stop or (trainer.epoch==trainer.epochs-1)
