@@ -137,3 +137,35 @@ def intersect_dicts(da, db, exclude=()):
         (dict): Dict of intersecting keys with matching shapes
     """
     return {k:v for k,v in da.items() if k in db and all(x not in k for x in exclude) and v.shape==db[k].shape}
+
+def fuse_conv_and_bn(conv, bn):
+    """Fuse Conv2d and BatchNorm2d layers for inference optimization.
+
+    Args:
+        conv (nn.Conv2d): Convolutional layer to fuse.
+        bn (nn.BatchNorm2d): Batch normalization layer to fuse.
+
+    Returns:
+        (nn.Conv2d): The fused convolutional layer with gradients disabled.
+
+    Examples:
+        >>> conv = nn.Conv2d(3, 16, 3)
+        >>> bn = nn.BatchNorm2d(16)
+        >>> fused_conv = fuse_conv_and_bn(conv, bn)
+    """
+    # Compute fused weights
+    w_conv = conv.weight.view(conv.out_channels, -1)
+    w_bn = torch.diag(bn.weight.div(torch.sqrt(bn.eps + bn.running_var)))
+    conv.weight.data = torch.mm(w_bn, w_conv).view(conv.weight.shape)
+
+    # Compute fused bias
+    b_conv = torch.zeros(conv.out_channels, device=conv.weight.device) if conv.bias is None else conv.bias
+    b_bn = bn.bias - bn.weight.mul(bn.running_mean).div(torch.sqrt(bn.running_var + bn.eps))
+    fused_bias = torch.mm(w_bn, b_conv.reshape(-1, 1)).reshape(-1) + b_bn
+
+    if conv.bias is None:
+        conv.register_parameter("bias", nn.Parameter(fused_bias))
+    else:
+        conv.bias.data = fused_bias
+
+    return conv.requires_grad_(False)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
+import re
 import yaml
 import types
 import contextlib
@@ -11,8 +12,8 @@ import torch
 import torch.nn as nn
 
 from computer_vision.yolov11_pose.utils.ops import make_divisible
-from computer_vision.yolov11_pose.nn.modules import Conv, C3k2, SPPF, C2PSA, Concat, Pose, Detect
-from computer_vision.yolov11_pose.utils.torch_utils import initialize_weights, model_info, intersect_dicts
+from computer_vision.yolov11_pose.nn.modules import Conv, DWConv, C3k2, SPPF, C2PSA, Concat, Pose, Detect
+from computer_vision.yolov11_pose.utils.torch_utils import initialize_weights, model_info, intersect_dicts, fuse_conv_and_bn
 
 class DetectionModel(nn.Module):
     """
@@ -76,6 +77,32 @@ class DetectionModel(nn.Module):
         """
         return model_info(self, detailed=detailed, verbose=verbose, imgsz=imgsz)
 
+    def fuse(self, verbose=True):
+        """
+        Fuse `Conv2d` and `BatchNorm2d` layers into a single layer for improved computational efficiency
+        Returns:
+            (torch.nn.Module): The fused model
+        """
+        if self.is_fused(): return self
+        for m in self.model.modules():
+            if isinstance(m, (Conv, DWConv)) and hasattr(m, "bn"):
+                m.conv=fuse_conv_and_bn(m.conv, m.bn) # update conv
+                delattr(m, 'bn') # remove batchnorm
+                m.forward=m.forward_fuse # update forward
+        self.info(verbose=verbose)
+        return self
+
+    def is_fused(self, thresh=10):
+        """
+        Check if the model has less than a certain threshold of BatchNorm layers
+        Args:
+            thresh (int, optional): The threshold number of BatchNorm layers
+        Returns:
+            (bool): True if the number of BatchNorm layers in the model is less than the threshold, False otherwise
+        """
+        bn=tuple(v for k, v in torch.nn.__dict__.items() if "Norm" in k) # normalization layers, i.e., BatchNorm2d()
+        return sum(isinstance(v, bn) for v in self.modules()) < thresh # True if < `thresh` BatchNorm layers in the model
+            
     def forward(self, x, *args, **kwargs):
         """
         Perform forward pass of the model for either training or inference
@@ -215,6 +242,11 @@ def yaml_model_load(path):
     if isinstance(path, Path):
         assert path.is_file(), f'{path} does not exist'
         with open(path) as f: config=yaml.load(f, Loader=yaml.SafeLoader)
+
+    # guess model scale
+    try: config['scale']=re.search(r"yolo(e-)?[v]?\d+([nslmx])", path.stem).group(2)
+    except AttributeError: config['scale']=''
+    config["yaml_file"] = str(path)
     return config
     
 def cfg2task(cfg):
