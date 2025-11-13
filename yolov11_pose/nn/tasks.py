@@ -158,6 +158,7 @@ class DetectionModel(nn.Module):
                 raise NotImplementedError('Please implement me, see https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py')
             if m.i in embed:
                 raise NotImplementedError('Please implement me, see https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py')
+        #print(f'In nn.tasks._predict_once x {x.shape}')
         return x
 
     def loss(self, batch, preds=None):

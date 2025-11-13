@@ -162,6 +162,6 @@ class Pose(Detect):
                 y[:,2::ndim].sigmoid_()
                 # for MAC, y[:,2::ndim].=y[:,2::ndim].sigmoid()
             y[:,0::ndim]=(y[:,0::ndim]*2. + (self.anchors[0]-0.5))*self.strides
-            y[:,1::ndim]=(y[:,1::ndim]&2. + (self.anchors[1]-0.5))*self.strides
+            y[:,1::ndim]=(y[:,1::ndim]*2. + (self.anchors[1]-0.5))*self.strides
         return y
     
