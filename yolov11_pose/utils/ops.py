@@ -113,6 +113,38 @@ def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None, padding:bool=True
     boxes[...,:4]/=gain
     return boxes if xywh else clip_boxes(boxes, img0_shape)
 
+def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None, normalize:bool=False, padding:bool=True):
+    """ Recale segment coodinates from img1_shape to img0_shape
+    Args:
+        img1_shape (tuple): Source image shape as HWC or HW (support both)
+        coords (torch.Tensor): Coordinates to scale with shape (N, 2) where N is the number of coordinate tuples, and 2 for (x,y)
+        img0_shape (tuple): Target image shape as HWC or HW (support both)
+        ratio_pad (tuple, optional): Ratio and padding values as ((ratio_h, ratio_w), (pad_w, pad_h))
+        normalize (bool): Whether to normalize coordinates to range [0,1]
+        padding (bool): Wehther coordinates are based on YOLO-style augmented images with padding
+    Returns:
+        (torch.Tensor): Scaled coordinates
+    """ 
+    img0_h, img0_w=img0_shape[:2] # support both HWC or HW shapes
+    if ratio_pad is None: # calculate from img0_shape
+        img1_h, img1_w=img1_shape[:2] # support both HWC or HW shapes
+        gain=min(img1_h/img0_h, img1_w/img0_w) # gain=source/target
+        pad=(img1_w-img0_w*gain)/2, (img1_h-img0_h*gain)/2 # wh padding
+    else:
+        gain=ratio_pad[0][0]
+        pad=ratio_pad[1]
+        
+    if padding:
+        coords[...,0]-=pad[0] # x padding
+        coords[...,1]-=pad[1] # y padding
+    coords[...,0]/=gain
+    coords[...,1]/=gain
+    coords=clip_coords(coords, img0_shape)
+    if normalize:
+        coords[...,0]/=img0_w # width
+        coords[...,1]/=img0_h # height
+    return coords
+
 def clip_boxes(boxes, shape):
     """
     Clip bounding boxes to image boundaries
@@ -139,3 +171,25 @@ def clip_boxes(boxes, shape):
         boxes[...,[1,3]]=boxes[...,[1,3]].clip(0,h) # y1, y2
         
     return boxes
+
+def clip_coords(coords, shape):
+    """Clip line coordinates to image boundaries
+    
+    Args:
+        coords (torch.Tensor | np.ndarray): Line coordinates of size (N,2) to clip
+        shape (tuple): Image shape as HWC or HW (support both)
+    Returns:
+        (torch.Tensor | np.ndarray): Clipped coordinates
+    """
+    h, w=shape[:2] # support both HWC or HW shapes
+    if isinstance(coords, torch.Tensor):
+        if NOT_MACOS14:
+            coords[...,0].clamp_(0, w) # x
+            coords[...,1].clamp_(0, h) # y
+        else: # Apple macOS14 MPS bug https://github.com/ultralytics/ultralytics/pull/21878
+            coords[...,0]=coords[...,0].clamp(0,w)
+            coords[...,1]=coords[...,1].clamp(0,h)
+    else: # np.ndarray
+        coords[...,0]=coords[...,0].clip(0,w) # x
+        coords[...,1]=coords[...,1].clip(0,h) # y
+    return coords

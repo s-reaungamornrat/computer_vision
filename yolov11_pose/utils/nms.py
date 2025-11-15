@@ -8,9 +8,22 @@ import torch
 from .metrics import box_iou, batch_probiou
 from .ops import xywh2xyxy
 
-def non_max_suppression(prediction:torch.Tensor|tuple, conf_thres:float=0.25, iou_thres:float=0.45,classes:list[int]=None, agnostic:bool=False,
-                        multi_label:bool=False, max_det:int=300, nc:int=0, max_time_img:float=0.05, max_nms:int=3000, max_wh:int=7680,
-                        rotated:bool=False, end2end:bool=False, return_idxs:bool=False):
+def non_max_suppression(
+    prediction:torch.Tensor|tuple, 
+    conf_thres:float=0.25, 
+    iou_thres:float=0.45,
+    classes:list[int]=None, 
+    agnostic:bool=False,
+    multi_label:bool=False, 
+    max_det:int=300, 
+    nc:int=0, 
+    max_time_img:float=0.05, 
+    max_nms:int=30000, 
+    max_wh:int=7680,
+    rotated:bool=False, 
+    end2end:bool=False, 
+    return_idxs:bool=False
+   ):
     """
     Perform non-maximum suppression (NMS) on prediction results
 

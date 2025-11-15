@@ -52,7 +52,7 @@ skeleton_map = [
     {'srt_kpt_id':4, 'dst_kpt_id':6, 'color':[255, 18, 200], 'thickness':5}         
 ]
 
-def skeletons_overlay(img_bgr, results, output_filename=None):
+def skeletons_overlay(img_bgr, results, output_filename=None, show=False):
     """
     Draw a skeleton of each set of detected keypoints
     Args:
@@ -61,6 +61,7 @@ def skeletons_overlay(img_bgr, results, output_filename=None):
             - boxes (engine.results.Boxes) for bounding boxes
             - keypoints (engine.results.Keypoints) for keypoints
         output_filename (str): Path to save image. If None, show image using matplotlib
+        show (bool): Whether to show output in plt.imshow
     """
     img_bgr=img_bgr.copy() # we do not want to modify the input image
     
@@ -110,5 +111,5 @@ def skeletons_overlay(img_bgr, results, output_filename=None):
             img_bgr=cv2.circle(img_bgr, (kpt_x, kpt_y), kpt_radius, kpt_color, -1)
             
     if output_filename is not None: cv2.imwrite(output_filename, img_bgr)
-    else: plt.imshow(img_bgr[:,:,::-1])
-
+    elif show: plt.imshow(img_bgr[:,:,::-1])
+    else: return img_bgr

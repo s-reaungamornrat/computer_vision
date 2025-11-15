@@ -297,5 +297,26 @@ class Results:
             v=getattr(self,k)
             if v is not None: return len(v)
 
-    def update(self)
+    def update(self, boxes:torch.Tensor|None=None, keypoints:torch.Tensor|None=None, masks:torch.Tensor|None=None,
+               probs:torch.Tensor|None=None, obb:torch.Tensor|None=None ):
+        """Update the Results object with new detection data
+        
+        This method allows updating the boxes, keypoints, masks, probabilities, and oriented bounding boxes (OBB) of the Results object. 
+        It ensures that boxes are clipped to the original image shape
+
+        Args:
+            boxes (torch.Tensor | None): A tensor of shape (N,6) containing bounding box coordinates and confidence socres. The format
+                is (x1, y1, x2, y2, conf, class)
+            masks (torch.Tensor | None): A tensor of shape (N,H,W) containing segmentation masks
+            probs (torch.Tensor | None): A tensor of shape (num_classes, ) containing class probabilities
+            obb (torch.Tensor | None): a tensor of shape (N, 5) containing oriented bounding box coordinates.
+            keypoints (torch.Tensor | None): A tensor of shape (N, 17, 3) containing keypoints.
+        Examples:
+            >>> results=model("image.jpg")
+            >>> new_boxes=torch.tensor([[100,100,200,200,0.9,0]])
+            >>> results[0].update(boxes=new_boxes)
+        """
+        if boxes is not None: self.boxes=Boxes(ops.clip_boxes(boxes, self.orig_shape), self.orig_shape)
+        if keypoints is not None: self.keypoints=Keypoints(keypoints, self.orig_shape)
+            
             
