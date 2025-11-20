@@ -193,3 +193,16 @@ def clip_coords(coords, shape):
         coords[...,0]=coords[...,0].clip(0,w) # x
         coords[...,1]=coords[...,1].clip(0,h) # y
     return coords
+
+def segments2boxes(segments):
+    """Convert segment labels to box labels, i.e., [ [x1,y1], [x2,y2],...[xn,yn]] to xywh
+    Args:
+        segments (list[np.ndarray]): List of segments where each segment is a Nx2 array of points for N points and [x,y] coordinates
+    Returns:
+        (np.ndarray): Bounding box coordinates in xywh format of shape (N,4)
+    """
+    boxes=[]
+    for s in segments:
+        x,y=s.T # segment x,y
+        boxes.append([x.min(), y.min(), x.max(), y.max()]) # xyxy
+    return xyxy2xywh(np.array(boxes))
