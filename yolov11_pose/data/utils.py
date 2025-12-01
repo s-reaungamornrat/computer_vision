@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import warnings
 
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
 from computer_vision.yolov11_pose.utils.ops import segments2boxes
+from computer_vision.yolov11_pose.utils import is_dir_writeable
 
 IMG_FORMATS = {"bmp", "dng", "jpeg", "jpg", "mpo", "png", "tif", "tiff", "webp", "pfm", "heic"}  # image suffixes
 
@@ -155,3 +157,13 @@ def verify_image_label(im_file, lb_file, prefix, keypoint, num_cls, nkpt, ndim, 
         nc=1
         msg=f'{prefix}{im_file}: ignoring corrupt image/label: {e}'
         return (None,None,None,None,None,nm,nf,ne,nc,msg)
+
+def save_dataset_cache_file(prefix: str, path: Path, x: dict):
+    """Save a dataset *.cache  dict x to path"""
+
+    if is_dir_writeable(path.parent):
+        if path.exists(): path.unlink() # remove *.cach file if exists
+        with open(str(path), 'wb') as file: # context manager here fixes windows async np.save bug
+            np.save(file, x)
+        print(f'{prefix}New cache created: {path}')
+    else: warnings.warn(f'{prefix}Cache directory {path.parent} is not writable, cache not saved')

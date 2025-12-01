@@ -1,9 +1,17 @@
+import os
 import yaml
 import platform
+
 from types import SimpleNamespace
+from pathlib import Path
 
 DEFAULT_CFG_PATH='../default.yaml'
-with open(DEFAULT_CFG_PATH) as f: DEFAULT_CFG_DICT=yaml.load(f, Loader=yaml.SafeLoader)
+if os.path.isfile(DEFAULT_CFG_PATH):
+    with open(DEFAULT_CFG_PATH) as f: DEFAULT_CFG_DICT=yaml.load(f, Loader=yaml.SafeLoader)
+else:
+    DEFAULT_CFG_PATH='../../default.yaml'
+    if os.path.isfile(DEFAULT_CFG_PATH):
+        with open(DEFAULT_CFG_PATH) as f: DEFAULT_CFG_DICT=yaml.load(f, Loader=yaml.SafeLoader)
 
 MACOS, LINUX, WINDOWS = (platform.system() == x for x in ["Darwin", "Linux", "Windows"])  # environment booleans
 MACOS_VERSION = platform.mac_ver()[0] if MACOS else None
@@ -67,3 +75,12 @@ class IterableSimpleNamespace(SimpleNamespace):
         """Return the value of the specified key if it exists; otherwise, return the default value."""
         return getattr(self, key, default)
 
+
+def is_dir_writeable(dir_path: str| Path)->bool:
+    """Check if a directory is writable
+    Args:
+        dir_path (str| Path): The path to the directory
+    Returns:
+        (bool): True if the directory is writable, False otherwise
+    """
+    return os.access(str(dir_path), os.W_OK)

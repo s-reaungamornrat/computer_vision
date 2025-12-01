@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import torch
+import numpy as np
 
 from computer_vision.yolov11_pose.utils import NOT_MACOS14
 
@@ -82,6 +83,55 @@ def xyxy2xywhn(x, w:int=640, h:int=640, clip:bool=False, eps:float=0.0):
     y[...,3]=(y2-y1)/h # normalized height
     return y
 
+def xyxy2ltwh(x):
+    """Convert bounding boxes from [x1,y1,x2,y2] to [x1, y1, w, h] format
+
+    Args:
+        x (np.ndarray | torch.Tensor): Input bounding box coordinates in xyxy format, of size (*,4)
+    Returns:
+        (np.ndarray | torch.Tensor): Bounding box coordinates in ltwh format, of size (*,4)
+    """  
+    y=x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[...,2]=x[...,2]-x[...,0] # width
+    y[...,3]=x[...,3]-x[...,1] # height
+    return y
+
+def xywh2ltwh(x):
+    """Convert bounding box format from [x,y,w,h] to [x1,y1,w,h] where x1, y1 are left-top coordinates
+
+    Args:
+        x (np.ndarray | torch.Tensor): Input bounding box coordinates in xywh format, of size (*, 4)
+    Returns:
+        (np.ndarray | torch.Tensor): Bounding box coordinates in ltwh format
+    """ 
+    y=x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[...,0]=x[...,0]-(x[...,2]/2) # left top x
+    y[...,1]=x[...,1]-(x[...,3]/2) # top left y
+    return y
+
+def ltwh2xyxy(x):
+    """Convert bounding box from [x1, y1, w, h] to [x1, y1, x2, y2] where x1,y1 is left-top and x2,y2 is right-bottom
+    Args:
+        x (np.ndarray | torch.Tensor): Input bounding box coordinates, of size (*, 4)
+    Returns:
+        (np.ndarray | torch.Tensor): Bounding box coordinates in xyxy format, of size (*,4)
+    """
+    y=x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[...,2]=x[...,0]+x[...,2] # left-top x + width
+    y[...,3]=x[...,1]+x[...,3] # left-top y + height
+    return y
+
+def ltwh2xywh(x):
+    """Convert bounding boxes from [x1,y1,w,h] to [x,y,w,h] where x1,y1 is left top and x,y is center
+    Args:
+        x (np.ndarray|torch.Tensor): Input bounding box coordinates, of size (*,4)
+    Returns:
+        (np.ndarray | torch.Tensor): Bounding box coordinates in xywh format, of size (*,4)
+    """
+    y=x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[...,0]=x[...,0]+(x[...,2]/2) # left top x + half width
+    y[...,1]=x[...,1]+(x[...,3]/2) # left top y + half height
+    return y
 def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None, padding:bool=True, xywh:bool=False):
     """
     Rescale bounding boxes from one image shape to another
@@ -206,3 +256,20 @@ def segments2boxes(segments):
         x,y=s.T # segment x,y
         boxes.append([x.min(), y.min(), x.max(), y.max()]) # xyxy
     return xyxy2xywh(np.array(boxes))
+
+def resample_segments(segments, n:int=1000):
+    """Resample segments to n points each using linear interpolation
+    Args:
+        segments (list): List of (N, 2) arrays where N is the number of points in each segment
+        n (int): Number of points to resample each segment to
+    Returns:
+        (list): Resampled segments with n points each
+    """
+    for i, s in enumerate(segments):
+        if len(s)==n: continue
+        s=np.concatenate((s,s[0:1,:]), axis=0)
+        x=np.linspace(0, len(s)-1, n-len(s) if len(s)<n else n)
+        xp=np.arange(len(s))
+        x=np.insert(x, np.searchsorted(x, xp), xp) if len(s)<n else x
+        segments[i]=(np.concatenate([np.interp(x, xp, s[:,i]) for i in range(2)], dtype=np.float32).reshape(2,-1).T) # segment xy
+    return segments

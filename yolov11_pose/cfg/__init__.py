@@ -33,6 +33,5 @@ def get_cfg(cfg: str|Path|dict|SimpleNamespace=DEFAULT_CFG_DICT,overrides:dict|S
     cfg=cfg2dict(cfg)
     if overrides:
         overrides=cfg2dict(overrides)
-        print('overrides ', type(overrides), ' cfg ', type(cfg))
         cfg={**cfg,**overrides} # merge cfg and overrides (preferring overrides)
     return IterableSimpleNamespace(**cfg)
