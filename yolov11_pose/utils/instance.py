@@ -117,7 +117,7 @@ class Bboxes:
         if len(boxes_list)==1: return boxes_list[0]
         return cls(np.concatenate([b.bboxes for b in boxes_list], axis=axis))
 
-    def __getitem___(self,index:int|np.ndarray|slice)->Bboxes:
+    def __getitem__(self,index:int|np.ndarray|slice)->Bboxes:
         """Retrieve a specific bounding box or a set of bounding boxes using indexing
         Args:
             index (int | np.ndarray | slice): The index, slice or boolean array to select the desired bounding boxes
@@ -144,7 +144,8 @@ class Instances:
         ...                     keypoints=np.array([[[5,5,1],[10,10,1]],[[15,15,1],[20,20,1]]]),
         ... )
     """
-    def __init__(self, bboxes:np.ndarray, segments:np.ndarray | list[np.ndarray]=None, keypoints:np.ndarray=None, bbox_format:str='xywh', normalized:bool=True)->None:
+    def __init__(self, bboxes:np.ndarray, segments:np.ndarray | list[np.ndarray]=None, keypoints:np.ndarray=None, bbox_format:str='xywh', 
+                 normalized:bool=True)->None:
         """Initialize the Instances object with bounding boxes, segments, and keypoints
         Args:
             bboxes (np.ndarray): Bounding boxes with shape (N,4)
