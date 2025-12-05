@@ -12,6 +12,7 @@ from PIL import Image
 from torch.nn import functional as F
 
 from computer_vision.yolov11_pose.utils.instance import Instances
+from computer_vision.yolov11_pose.utils.metrics import bbox_ioa
 
 class BaseMixTransform:
     """Base class for mix transformations like CutMix, MixUp, and Mosaic
@@ -435,3 +436,264 @@ class Mosaic(BaseMixTransform):
         assert labels.get('rect_shape') is None, 'rect and mosaic are mutually exclusive'
         assert len(labels.get('mix_labels',[]))==self.n-1, f'There are not sufficient additional images for mosaic augmentation, requiring {n-1} but got {len(labels.get("mix_labels",[]))}'
         return self._mosaic3(labels) if self.n==3 else self._mosaic4(labels) if self.n==4 else self._mosaic9(labels)
+
+class MixUp(BaseMixTransform):
+    """Apply MixUp augmentation to image datasets
+
+    This class implements the MixUp augmentation technique as described in the paper [mixup: Beyond Empirical Risk Minimization]
+    (https://arxiv.org/abs/1710.09412). MixUp combines two images and their labels using a random weight.
+
+    Examples:
+        >>> dataset=YourDataset(...) # Your image dataset
+        >>> mixup = MixUp(dataset, p=0.5)
+        >>> augmented_labels=mixup(original_labels)
+    """
+
+    def __init__(self, dataset, pre_transform=None, p:float=0.0)->None:
+        """Initialize the MixUp augmentation object
+
+        MixUp is an image augmentation technique that combines two images by taking a weighted sum of their pixel values and labels. 
+
+        Args:
+            dataset (Any): The dataset to which MixUp augmentation will be applied
+            pre_transform (Callable | None): Optional transform to apply to images before MixUp
+            p (float): Probability of applying MixUp augmentation to an image. Must be in the range [0,1]
+        """
+        super().__init__(dataset=dataset, pre_transform=pre_transform, p=p)
+
+    def _mix_transform(self, labels: dict[str, Any])->dict[str, Any]:
+        """Apply MixUp augmentation to the input labels
+
+        This method implements the MixUp augmentation technique as described in the paper "mixup: Beyond Empirical Risk
+        Minimization" (https://arxiv.org/abs/1710.09412). 
+
+        Args:
+            labels (dict[str, Any]): A dict containing the original image and label information
+        Returns:
+            (dict[str, Any]): A dict containing the mixed-up image and combined label information
+        """
+        r=np.random.beta(32., 32.) # mixup ratio, alpha=beta=32.
+        labels2=labels['mix_labels'][0]
+        labels['img']=(labels['img']*r +labels2['img']*(1.-r)).astype(np.uint8)
+        labels['instances']=Instances.concatenate([labels['instances'], labels2['instances']], axis=0)
+        labels['cls']=np.concatenate([labels['cls'], labels2['cls']], 0)
+        return labels
+
+class LetterBox:
+    """Resize image and padding for detection, instance segmentation, and pose.
+
+    This class resizes and pads images to a specified shape while preserving aspect ratio. It also updates corresponding labels and bounding boxes.
+
+    Examples:
+        >>> transform=LetterBox(new_shape=(640,640))
+        >>> result=transform(labels)
+        >>> resized_img=result['img']
+        >>> updated_instances=result['instances']
+    """
+    def __init__(self, new_shape:tuple[int, int]=(640, 640), auto:bool=False, scale_fill:bool=False, scaleup:bool=True, center:bool=True,
+        stride:int=32, padding_value:int=114, interpolation:int=cv2.INTER_LINEAR):
+        """Initialize LetterBox object for resizing and padding images
+
+        This class is designed to resize and pad images for object detection, instance segmentation, and pose estimation tasks. It supports
+        various resizing modes including auto-sizing, scale-fill, and letterboxing.
+
+        Args:
+            new_shape (tuple[int,int]): Target size (height, width) for the resized image
+            auto (bool): If True, use minimum rectangle to resize. If False, use new_shape directly
+            scale_fill (bool): If True, stretch the image to new shape without padding
+            scaleup (bool): If True, allow scaling up. If False, only scale down
+            center (bool): If True, center the placed image. If False, place image in top-left corner
+            stride (int): Stride of the model (e.g., 32 for YOLO)
+            padding_value (int): Value for padding the image. Default is 114
+            interpolation (int): Interpolation method for resizing. Default is cv2.INTER_LINEAR
+        """
+        self.new_shape=new_shape
+        self.auto=auto
+        self.scale_fill=scale_fill
+        self.scaleup=scaleup
+        self.stride=stride
+        self.center=center # put the image in the middle or top-left
+        self.padding_value=padding_value
+        self.interpolation=interpolation
+
+    @staticmethod
+    def _update_labels(labels:dict[str, Any], ratio:tuple[float, float], padw:float, padh:float)->dict[str, Any]:
+        """Update labels after applying letteringbox to an image
+
+        This method modifies the bounding box coordinates of instances in the labels to account for resizing and padding applied during 
+        letterboxing.
+
+        Args:
+            labels (dict[str, Any]): A dict containing image labels and instances
+            ratio (tuple[float, float]): Scaling ratio (width, height) applied to the image
+            padw (float): Padding width added to the image
+            padh (float): Padding height added to the image
+        Returns:
+            (dict[str, Any]): Updated labels dict with modified instance coordinates
+        """
+        labels['instances'].convert_bbox(format='xyxy')
+        labels['instances'].denormalize(*labels['img'].shape[:2][::-1]) # width, height
+        labels['instances'].scale(*ratio)
+        labels['instances'].add_padding(padw, padh)
+        return labels
+
+    def __call__(self,labels:dict[str, Any]|None=None, image:np.ndarray=None)->dict[str, Any]|np.ndarray:
+        """Resize and pad an image for object detection, instance segmentation, or pose estimation tasks
+
+        This method applies letterboxing to the input image, which involves resizing the image while maintaining its aspect ratio
+        and adding padding to fit the new shape. It also updates any associated labels accordingly
+
+        Args:
+            labels (dict[str, Any]|None): A dict containing image data and associated labels, or None
+            image (np.ndarray|None): The input image as a numpy array. If None, the image is taken from `labels`.
+        Returns:
+            (dict[str, Any]|np.ndarray): If `labels` is provided, returns an updated dict with the resized and padded image, updated labels,
+                and additional metadata. If `labels` is not provided, return the resized and padded image only
+        """
+        if labels is None: labels={}
+        img=labels.get('img') if image is None else image
+        shape=img.shape[:2] # current shape (height, width)
+        new_shape=labels.pop('rect_shape', self.new_shape)
+        if isinstance(new_shape, int): new_shape=(new_shape, new_shape)
+
+        # Scale ratio (new/old)
+        r=min(new_shape[0]/shape[0], new_shape[1]/shape[1]) 
+        if not self.scaleup: # only scale down, do not scale up (for better validation mAP)
+            r=min(r, 1.)
+
+        # Compute padding
+        ratio=r,r # width, height ratios
+        new_unpad=round(shape[1]*r), round(shape[0]*r) # width, height
+        dw, dh=new_shape[1]-new_unpad[0], new_shape[0]-new_unpad[1] # width, height
+        print(f'Before auto dw {dw}, dh {dh} current shape {shape}')
+        if self.auto: # minimum rectangle 
+            # dw and dh are the smallest number to add to make new_unpad the next modulo of stride
+            # let a be new_unpad, r is new_shape, and s is stride, i.e., dw=r-a
+            # [a+ ((r−a)%s)]% s=0 
+            dw, dh=np.mod(dw, self.stride), np.mod(dh, self.stride)
+            print(f'After auto dw {dw}, dh {dh}')
+        elif self.scale_fill: # stretch 
+            dw, dh=0., 0.
+            new_unpad=(new_shape[1], new_shape[0]) # width, height
+            ratio=new_shape[1]/shape[1], new_shape[0]/shape[0] # width, height ratios
+
+        if self.center: # divide padding into 2 sides
+            dw/=2
+            dh/=2
+        if shape[::-1]!=new_unpad: # resize
+            img=cv2.resize(img, new_unpad, interpolation=self.interpolation)
+            if img.ndim==2: img=img[...,None]
+
+        top, bottom=round(dh-0.1) if self.center else 0, round(dh+0.1)
+        left, right=round(dw-0.1) if self.center else 0, round(dw+0.1)
+        h,w,c=img.shape
+        if c==3:
+            img=cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(self.padding_value,)*3)
+        else: # multispectral
+            pad_img=np.full((h+top+bottom, w+left+right, c), fill_value=self.padding_value, dtype=img.dtype)
+            pad_img[top:top+h, left:left+w]=img
+            img=pad_img
+        if labels.get('ratio_pad'):
+            labels['ratio_pad']=(labels['ratio_pad'], (left, top)) # for evaluation
+        if len(labels):
+            labels=self._update_labels(labels, ratio, left, top)
+            labels['img']=img
+            labels['resized_shape']=new_shape
+            return labels
+        return img
+
+
+class CutMix(BaseMixTransform):
+    """Apply CutMix augmentation to image datasets as described in the paper https://arxiv.org/abs/1905.04899.
+
+    CutMix combines two images by replacing a random rectangular region of one image with the corresponding region from another image, and
+    adjusts the labels proportionally to the area of the mixed region.
+
+    Examples:
+        >>> dataset=YourDataset(...)
+        >>> cutmix=CutMix(dataset, p=0.5)
+        >>> augmented_labels=cutmix(original_labels)
+    """
+    def __init__(self, dataset, pre_transform=None, p:float=0., beta:float=1., num_areas:int=3)->None:
+        """Initialize the CutMix augmentation object
+        Args:
+            dataset (Any): The dataset to which CutMix augmentation will be applied
+            pre_transform (Callable | None): Optional transform to apply before CutMix
+            p (float): Probability of applying CutMix augmentation
+            beta (float): Beta distribution parameter for sampling the mixing ratio
+            num_areas (int): Number of areas to try to cut and mix
+        """
+        super().__init__(dataset=dataset, pre_transform=pre_transform, p=p)
+        self.beta=beta
+        self.num_areas=num_areas
+        
+    def _rand_bbox(self, width:int, height:int)->tuple[int, int, int, int]:
+        """Generate random bounding box coordinates for the cut region
+        Args:
+            width (int): Width of the image
+            height (int): Height of the image
+        Returns:
+            (tuple[int, int,int,int]): (x1,y1,x2,y2) coordinates of the bounding box
+        """
+        # Sample mixing ratio from Beta distribution
+        lam=np.random.beta(self.beta, self.beta) # controls the area ratio of the patch taken from image B and placed onto image A.
+
+        cut_ratio=np.sqrt(1.0-lam)
+        cut_w=int(width*cut_ratio)
+        cut_h=int(height*cut_ratio)
+
+        # Random center
+        cx=np.random.randint(width)
+        cy=np.random.randint(height)
+        
+        # Bounding box coordinates
+        x1=np.clip(cx-cut_w//2, 0, width)
+        y1=np.clip(cy-cut_h//2, 0, height)
+        x2=np.clip(cx+cut_w//2, 0, width)
+        y2=np.clip(cy+cut_h//2, 0, height)
+
+        return x1, y1, x2, y2
+
+
+    def _mix_transform(self, labels:dict[str, Any])->dict[str, Any]:
+        """Apply CutMix augmentation to the input labels
+        Args:
+            labels (dict[str, Any]): A dict containing the original image and label information
+        Returns:
+            (dict[str, Any]): A dict containing the mixed image and adjusted labels
+        """
+        h, w=labels['img'].shape[:2]
+        
+        cut_areas=np.asarray([self._rand_bbox(w, h) for _ in range(self.num_areas)], dtype=np.float32) # NAx4 where NA is num_areas
+        ioa1=bbox_ioa(cut_areas, labels['instances'].bboxes) # (self.num_areas, num_boxes)
+        idx=np.nonzero(ioa1.sum(axis=1)<=0)[0] # find cut_areas that do not overlap with any ground truth boxes, i.e., sum==0
+        if len(idx)==0: return labels # all cut_areas overlap with some ground truth boxes 
+        
+        labels2=labels.pop("mix_labels")[0]
+        area=cut_areas[np.random.choice(idx)] # randomy select one of size (4,)
+        ioa2=bbox_ioa(area[None], labels2["instances"].bboxes).squeeze(0) # 1xM -> M where M is the number of boxes in labels2['instances']
+        
+        # find cut_area that overlap with some mix-label boxes. assuming annotation are normalized
+        indexes2=np.nonzero(ioa2>=(0.01 if len(labels2["instances"].segments) else 0.1))[0] # requires large overlap if annotation only contain boxes
+        if len(indexes2)==0: return labels
+        
+        instances2=labels2['instances'][indexes2]
+        instances2.convert_bbox('xyxy')
+        instances2.denormalize(w,h)
+        
+        # Apply CutMix
+        x1,y1,x2,y2=area.astype(np.int32)
+        labels['img'][y1:y2, x1:x2]=labels2['img'][y1:y2, x1:x2]
+        
+        # Restrain instances2 to the random bounding border
+        # shift the labels so its rectangle's top left corner become (0,0), so clipping works correctly
+        # i.e., move the cut-out patch so its origin/top-left corner is at (0,0)
+        instances2.add_padding(-x1, -y1)
+        instances2.clip(x2-x1, y2-y1) # clip to remove annotation lies outside cut-out patch
+        instances2.add_padding(x1, y1) # shift the annotation back to the coordinate system of the main image
+        
+        labels['cls']=np.concatenate([labels['cls'], labels2['cls'][indexes2]], axis=0)
+        labels['instances']=Instances.concatenate([labels["instances"], instances2], axis=0)
+    
+        return labels
+        

@@ -140,7 +140,8 @@ class YOLODataset(Dataset):
             raise ValueError("'kpt_shape' in data.yaml missing or incorrect, Should be a list with [number of keypoints,"
                              "number of dims (2 for x,y or 3 for x,y,visible)], i.e.,'kpt_shape:[17,3]'")
         
-        for im_file, lb_file in zip(self.im_files, self.label_files):
+        for i, (im_file, lb_file) in enumerate(zip(self.im_files, self.label_files)):
+            print(i, end=',')
             im_file, lb, shape, segments, keypoints, nm_f, nf_f, ne_f, nc_f, msg=verify_image_label(im_file, lb_file, self.prefix, 
                                                                                                     self.use_keypoints, len(self.data["names"]), 
                                                                                                     nkpt, ndim, self.single_cls)
@@ -162,12 +163,14 @@ class YOLODataset(Dataset):
                     }
                 )
             if msg: msgs.append(msg)
+        print()
         if msgs: print('\n'.join(msgs))
         if nf==0: warnings.warn(f'{self.prefix}No labels found in {path}')
         x["results"]=nf, nm, ne, nc, len(self.im_files)
         x["msgs"]=msgs # warnings
         
         save_dataset_cache_file(self.prefix, path, x)
+        
         return x
 
     def get_labels(self)->list[dict]:
@@ -180,9 +183,11 @@ class YOLODataset(Dataset):
         """
         self.label_files=img2label_paths(self.im_files)
         cache_path=Path(self.label_files[0]).parent.with_suffix(".cache")
+        print(f'In data.dataset.YOLODataset.get_labels cache_path {cache_path}')
         try:
             cache, exists=load_dataset_cache_file(cache_path), True # attempt to load a *.cache file
-        except (FileNotFoundError, AssertionError, AttributeError, ModuleNotFoundError):
+        except Exception as err:#(FileNotFoundError, AssertionError, AttributeError, ModuleNotFoundError):
+            print(f'In data.dataset.YOLODataset.get_labels create and load cache.... because of loading error {err}')
             cache, exists=self.cache_labels(cache_path), False # run cache ops
 
         # Display cache
@@ -344,14 +349,19 @@ class YOLODataset(Dataset):
         if im is None: raise FileNotFoundError(f'Image Not Found {f}')
         
         h0,w0=im.shape[:2] # original height, width
+        # print(f'In data.dataset.YOLODataset.load_image (h0,w0) ({h0},{w0}), not(h0==w0==self.imgsz) {not(h0==w0==self.imgsz)}')
         if rect_mode: # resize long side to imgsz while maintaining aspect ratio
             r=self.imgsz/max(h0,w0) # ratio
             if r!=1: # here we do not resize if one of the image size (width or height) equal imgsz,
                 # i.e., if imgsz=640, for (h0,w0)=(640,480), we return the original image
                 w,h=min(math.ceil(w0*r), self.imgsz), min(math.ceil(h0*r), self.imgsz)
                 im=cv2.resize(im, (w,h),interpolation=cv2.INTER_LINEAR)
-        elif not(h0==w0==self.imgsz): # resize by stretching image to square imgsz
-            im=cv2.resize(im, (self.imgsz, self.imgsz), interpolation=cv2.INTER_LINEAR)
+        # elif not(h0==w0==self.imgsz): # resize by stretching image to square imgsz
+        #     # somehow this block never got executed and I do not know why even if `not(h0==w0==self.imgsz)` evaluate to True
+        #     print(f'In data.dataset.YOLODataset.load_image before resizing image shape {im.shape}')
+        #     im=cv2.resize(im, (self.imgsz, self.imgsz), interpolation=cv2.INTER_LINEAR)
+        #     print(f'In data.dataset.YOLODataset.load_image resized image to {im.shape}')
+        # print(f'In data.dataset.YOLODataset.load_image not(h0==w0==self.imgsz) {not(h0==w0==self.imgsz)}')
         if im.ndim==2: im=[...,None]
         
         # Add to buffer if training with augmentation
