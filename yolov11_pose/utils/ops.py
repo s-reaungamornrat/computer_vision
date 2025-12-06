@@ -244,6 +244,29 @@ def clip_coords(coords, shape):
         coords[...,1]=coords[...,1].clip(0,h) # y
     return coords
 
+def segment2box(segment, width:int=640, height:int=640):
+    """Convert segment coordinates to bounding box coordinates
+
+    Convert a single segment to a box by finding the minimum and maximum x and y coordinates. Apply inside-image constraint
+    and clip coordinates when necessary
+
+    Args:
+        segment (torch.Tensor | np.ndarray): Segment coordinates in format (N, 2) where N is the number of points
+        width (int): Width of the image in pixels
+        height (int): Height of the image in pixels
+    Returns:
+        (np.ndarray): Bounding box coordinates in xyxy format [x1, y1, x2, y2]
+    """
+    x, y=segment.T
+    # Clip coordinates if 3 out of 4 sides are outside the image
+    if np.array([x.min()<0, y.min()<0, x.max()>width-1, y.max()>height-1]).sum()>=3:
+        x=x.clip(0, width-1)
+        y=y.clip(0, height-1)
+    inside=(x>=0)&(y>=0)&(x<=width-1)&(y<=height-1)
+    x=x[inside]
+    y=y[inside]
+    return (np.array([x.min(), y.min(), x.max(), y.max()], dtype=segment.dtype) if any(x) else np.zeros(4, dtype=segment.dtype))
+
 def segments2boxes(segments):
     """Convert segment labels to box labels, i.e., [ [x1,y1], [x2,y2],...[xn,yn]] to xywh
     Args:
