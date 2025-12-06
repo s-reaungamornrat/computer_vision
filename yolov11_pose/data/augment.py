@@ -944,4 +944,155 @@ class RandomPerspective:
         labels['img']=img
         labels['resized_shape']=img.shape[:2]
         return labels
+
+class CopyPaste(BaseMixTransform):
+    """CopyPaste class for applying Copy-Paste augmentation to image datasets
+
+    This class implements the Copy-Paste augmentation technique as described in the paper "Simple Copy-Paste is a Strong
+    Data Augmentation Method for Instance Segmentation" (https://arxiv.org/abs/2012.07177). It combines objects from different
+    images to create new training samples
+
+    Examples:
+        >>> dataset=YourDataset(...) 
+        >>> copypaste=CopyPaste(dataset, p=0.5)
+        >>> augmented_labels=copypaste(original_labels)
+    """
+    def __init__(self, dataset=None, pre_transform=None, p:float=0.5, mode:str='flip')->None:
+        """Initialize CopyPaste object with dataset, pre_transform, and probability of applying CopyPaste"""
+        super().__init__(dataset=dataset, pre_transform=pre_transform, p=p)
+        assert mode in {'flip', 'mixup'}, f'Expected `mode` to be `flip` or `mixup`, but got {mode}'
+        self.mode=mode
+    def _mix_transform(self, labels:dict[str, Any])->dict[str, Any]:
+        """Apply CopyPaste augmentation to combine objects from another image into the current image"""
+        labels2=labels['mix_labels'][0]
+        return self._transform(labels, labels2)
+    def __call__(self, labels:dict[str, Any])->dict[str, Any]:
+        """Apply CopyPaste augmentatioon to an image and its labels"""
+        if len(labels['instances'].segments)==0 or self.p==0: return labels
+        if self.mode=='flip': return self._transform(labels)
+
+        # Get index of aother image
+        indexes=self.get_indexes()
+        if isinstance(indexes, int): indexes=[indexes]
+
+        # Get image information will be used for copy-paste
+        mix_labels=[self.dataset.get_image_and_label(i) for i in indexes]
+
+        if self.pre_transform is not None:
+            for i, data in enumerate(mix_labels): mix_labels[i]=self.pre_transform(data)
+        labels['mix_labels']=mix_labels
+
+        # Update cls and texts
+        labels=self._update_label_text(labels)
+        # Copypaste
+        labels=self._mix_transform(labels)
+        labels.pop('mix_labels', None)
+        return labels
+
+    def _transform(self, labels1:dict[str, Any], labels2:dict[str, Any]={})->dict[str, Any]:
+        """Apply CopyPaste augmentation to combine objects from another image into the current image"""
         
+        im=labels1['img']
+        if 'mosaic_border' not in labels1: im=im.copy() # avoid modifying original non-mosaic image
+        cls=labels1['cls'] # (M,1)
+        h, w=im.shape[:2]
+        instances=labels1.pop('instances')
+        instances.convert_bbox(format='xyxy')
+        instances.denormalize(w, h)
+        
+        instances2=labels2.pop('instances', None)
+        if instances2 is None:
+            instances2=deepcopy(instances)
+            instances2.fliplr(w)
+        # Find boxes in instances2 that have small overlap with instances1.bboxes
+        ioa=bbox_ioa(instances2.bboxes, instances.bboxes) # intersect over area of instances.bboxes (N,M)
+        indexes=np.nonzero((ioa<0.3).all(1))[0] #(N,) overlap over area < 0.3
+        n=len(indexes)
+        # (N,M) for each N, find max M. Then get max-ioa of indexes
+        # Then get softed-indices from small ioa to large
+        sorted_idx=np.argsort(ioa.max(1)[indexes]) # get the index of instances2.bboxes that least overlap with instances1.bboxes
+        indexes=indexes[sorted_idx]
+        ins_mask=np.zeros(im.shape, np.uint8) # mask of instances2 annotation, i.e., area to write on labels1['img']
+        for j in indexes[:round(self.p*n)]:# number of pastes controlled by probability
+            cls=np.concatenate((cls, labels2.get('cls',cls)[[j]]), axis=0) # advanced/fancy indexing to preserve original dimension
+            instances = Instances.concatenate((instances, instances2[[j]]), axis=0)
+            # instances2.segments is NxPx2 so instances2.segments[[j]] is 1xPx2
+            cv2.drawContours(ins_mask, instances2.segments[[j]].astype(np.int32), -1, (1,1,1), cv2.FILLED)
+        result=labels2.get('img', cv2.flip(im, 1)) # flip horizontally around y axis, i.e., flip left/right
+        if result.ndim==2: # cv2.flip would eliminate the last dimension for grayscale images
+            result=result[...,None]
+        i=ins_mask.astype(bool)
+        im[i]=result[i]
+        labels1['img']=im
+        labels1['cls']=cls
+        labels1['instances']=instances
+        return labels1
+
+class RandomFlip:
+    """Apply a random horizontal or vertical flip to an image with a given probability
+
+    This class performs random image flipping and updates corresponding instance annotations such as bounding boxes and keypoints
+
+    Examples:
+        >>> transform=RandomFlip(p=0.5, direction='horizontal')
+        >>> result=transform({'img':image, 'instances':instances})
+        >>> flipped_image=result['img']
+        >>> flipped_instances=result['instances']
+    """
+    def __init__(self, p:float=0.5, direction:str='horizontal', flip_idx:list[int]|None=None)->None:
+        """Initialize the RandomFlip class with probability and direction
+
+        This class applies a random horizontal or vertical flip to an image with a given probability. It also updates any instances (bounding boxes,
+        keypoints, etc) accordingly
+
+        Args:
+            p (float): The probability of applying the flip. Must be between 0 and 1
+            direction (str): The direction to apply the flip. Must be 'horizontal' or 'vertical'
+            flip_idx (list[int]|None): Index mapping for flipping keypoints, if any
+        """
+        assert direction in {'horizontal', 'vertical'}, f'Support direction "horizontal" or "vertical, got {direction}"'
+        assert 0<=p<=1., f'The probability should be in range [0,1], but got {p}'
+        self.p=p
+        self.direction=direction
+        self.flip_idx=flip_idx
+        
+    def __call__(self, labels:dict[str, Any])->dict[str, Any]:
+        """Apply random flip to an image and update any instances like bounding boxes or keypoints accordingly
+
+        This method randomly flips the input image either horizontally or vertically based on the initialized probability and direction
+        It also updates teh corresponding instances (bounding boxes,keypoints) to match the flipped image
+        
+        Args:
+            labels (dict[str, Any]): A dict containing the following keys:
+                - 'img' (np.ndarray): The image to be flipped
+                - 'instances' (Instances): Object containing boxes and optionally keypoints
+        Returns:
+            (dict[str, Any]): The dict with the flipped image and updated instances:
+                - 'img' (np.ndarray): The flipped image
+                - 'instances' (Instances): Updated instances matching the flipped image
+        Examples:
+            >>> labels={"img":np.random.rand(640,640,3), "instances":Instances(...)}
+            >>> random_flip=RandomFlip(p=0.5,direction="horizontal")
+            >>> flipped_labels=random_flip(labels)
+        """
+        img=labels['img']
+        instances=labels.pop("instances")
+        instances.convert_bbox(format='xywh')
+        h, w=img.shape[:2]
+        if instances.normalized: h=w=1
+        
+        # WARNING: two separate if and calls to random.random() intentional for reproducibility with older versions
+        if self.direction=='vertical' and random.random()<self.p:
+            img=np.flipud(img)
+            instances.flipud(h)
+            # I do not think we need to reordering the keypoints after flipud
+            # if self.flip_idx is not None and instances.keypoints is not None: 
+            #     instances.keypoints=np.ascontiguousarray(instances.keypoints[:,self.flip_idx,:])
+        if self.direction=='horizontal' and random.random()<self.p:
+            img=np.fliplr(img)
+            instances.fliplr(w)
+            if self.flip_idx is not None and instances.keypoints is not None:
+                instances.keypoints=np.ascontiguousarray(instances.keypoints[:, self.flip_idx,:])
+        labels['img']=np.ascontiguousarray(img)
+        labels['instances']=instances
+        return labels

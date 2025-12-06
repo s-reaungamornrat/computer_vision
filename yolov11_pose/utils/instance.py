@@ -265,7 +265,7 @@ class Instances:
             y1=self.bboxes[:,1].copy()
             y2=self.bboxes[:,3].copy()
             self.bboxes[:,1]=h-y2
-            self.bboxes[:,2]=h-y1
+            self.bboxes[:,3]=h-y1
         else: self.bboxes[:,1]=h-self.bboxes[:,1]
         if len(self.segments):
             if isinstance(self.segments, np.ndarray): self.segments[...,1]=h-self.segments[...,1]
@@ -281,9 +281,9 @@ class Instances:
         """
         if self._bboxes.format=='xyxy':
             x1=self.bboxes[:,0].copy()
-            x2=self.bboxes[:,1].copy()
+            x2=self.bboxes[:,2].copy()
             self.bboxes[:,0]=w-x2
-            self.bboxes[:,1]=w-x1
+            self.bboxes[:,2]=w-x1
         else: self.bboxes[:,0]=w-self.bboxes[:,0]
         if len(self.segments):
             if isinstance(self.segments, np.ndarray): self.segments[...,0]=w-self.segments[...,0]
