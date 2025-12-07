@@ -14,6 +14,7 @@ from torch.nn import functional as F
 from computer_vision.yolov11_pose.utils.instance import Instances
 from computer_vision.yolov11_pose.utils.metrics import bbox_ioa
 from computer_vision.yolov11_pose.utils.ops import segment2box
+from computer_vision.yolov11_pose.utils import IterableSimpleNamespace
 
 class BaseMixTransform:
     """Base class for mix transformations like CutMix, MixUp, and Mosaic
@@ -1096,3 +1097,221 @@ class RandomFlip:
         labels['img']=np.ascontiguousarray(img)
         labels['instances']=instances
         return labels
+
+class RandomHSV:
+    """Randomly adjust the Hue, Saturation, and Value (HSV) channels of an image
+
+    This class applies random HSV augmentation to images within predefined limits set by hgain, sgain, vgain
+
+    Examples:
+        >>> augmenter=RandomHSV(hgain=0.5, sgain=0.5, vgain=0.5)
+        >>> image=np.random.randint(0, 255, (100,100,3), dtype=np.uint8)
+        >>> labels={'img':image}
+        >>> augmenter(labels)
+    """
+    def __init__(self, hgain:float=0.5, sgain:float=0.5, vgain:float=0.5)->None:
+        """Initialize the RandomHSV object for random HSV (Hue, Saturation, Value) augmentation
+
+        This class applies random adjustments to the HSV channels of an image within specified limits
+        Args:
+            hgain (float): Maximum variation for hue. Should be in the range [0,1]
+            sgain (float): Maximum variation for saturation. Should be in the range [0,1]
+            vgain (float): Maximum variation for value. Should be in the range [0,1]
+        """
+        self.hgain=hgain
+        self.sgain=sgain
+        self.vgain=vgain
+
+    def __call__(self, labels:dict[str, Any])->dict[str, Any]:
+        """Apply random HSV augmentation to an image within predefined limits
+        
+        This method modifies the input image by randomly adjusting its Hue, Saturation, and Value (HSV) channels. The adjustment
+        are made within th elimits set by the hgain, sgain, and vgain during initialization
+
+        Args:
+            labels (dict[str, Any]): A dict containing image data and metadata. Must include an 'img' key with the image as a numpy
+                array
+        Returns:
+            (dict[str, Any]): A dict containing the mixed image and adjusted labels
+        """
+        img=labels['img']
+        if img.shape[-1]!=3: return labels # only apply to image with 3 pixel-value channels
+
+        if self.hgain or self.sgain or self.vgain:
+            dtype=img.dtype # uint8
+
+            r=np.random.uniform(-1, 1, 3)*[self.hgain, self.sgain, self.vgain] # (3,) ndarray of random gains
+            x=np.arange(0, 256, dtype=r.dtype)
+            # lut_hue=(( x* (r[0]+1)) %180).astype(dtype) # original hue implementatioon from ultralytics<=8.3.78
+            lut_hue=((x+r[0]*180)%180).astype(dtype)
+            lut_sat=np.clip(x*(r[1]+1), 0, 255).astype(dtype)
+            lut_val=np.clip(x*(r[2]+1), 0, 255).astype(dtype)
+            lut_sat[0]=0 # prevent pure white changing color, introduced in 8.3.79
+
+            hue, sat, val=cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2HSV)) # each of size (H,W)
+            im_hsv=cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val)))
+            cv2.cvtColor(im_hsv, cv2.COLOR_HLS2BGR, dst=img) # no return needed
+        return labels
+
+class Compose:
+    """A class for composing multiple image augmentation transformation
+
+    Examples:
+        >>> transforms=[RandomFlip(), RandomPerspective()]
+        >>> compose=Compose(transforms)
+        >>> transformed_data=compose(data)
+        >>> compose.append(RandomHSV())
+        >>> compose.insert(0, LetterBox())
+    """
+    def __init__(self, transforms):
+        """Initialize the Compose object with a list of transforms
+
+        Args:
+            transforms (list[Callable]): A list of callable transform objects to be applied sequentially
+        """
+        self.transforms=transforms if isinstance(transforms, list) else [transforms]
+
+    def __call__(self, data):
+        """Apply a series of transformations to input data
+
+        This method sequentially applies each transformation in the Compose object to the input data
+
+        Args:
+            data (Any): The input data to be transformed. The type depends on the required input of the transformations in the list
+        Returns:
+            (Any): The transformed data after applying all transformation in the sequence
+        Examples:
+            >>> compose=Compose([Transform1(), Transform2(), Transform3()])
+            >>> transformed_data=compose(input_data)
+        """
+        for t in self.transforms: data=t(data)
+        return data
+    
+    def append(self, transform):
+        """Append a new transform to the existing list of transforms
+
+        Args:
+            transform (callable): The transformation to be added to the composition
+        """
+        self.transforms.append(transform)
+
+    def insert(self, index, transform):
+        """Insert a new transform at a specified index in the existing list of transformations
+
+        Args:
+            index (int): The index at which to insert the new transform
+            transform (callable): The transform to be inserted
+        """
+        self.transforms.insert(index, transform)
+
+    def __getitem__(self, index:list[int]|int)->Compose:
+        """Retrieve a specific transform or a set of transforms using indexing
+        Args:
+            index (list[int]|int): Index or list of indices of the transforms to retrieve
+        Returns:
+            (Compose): A new Compose object containing the selected transform(s)
+        Examples:
+            >>> compose=Compose([RandomFlip(), RandomPerspective(), RandomHSV()])
+            >>> single_transform=compose[1] # Return a Compose object with only RandomPerspective 
+            >>> multiple_transforms=compose[0:2] # Returns a Compose object with RandomFlip and RandomPerspective
+        """
+        assert isinstance(index, (int, list)), f'The indices should be either list or int type but got {type(index)}'
+        return Compose([self.transforms[i] for i in index]) if isinstance(index,list) else self.transforms[index]
+
+    def __setitem__(self, index:list[int]|int, value:list[Any]|Any)->None:
+        """Set one or more transforms in the composition using indexing
+
+        Args:
+            index (list[int]|int): Index or list of indices to set transforms at
+            value (list[Any]|Any): Transform or list of transforms to set at the specified index(es)
+        Examples:
+            >>> compose=Compose([Transform1(), Transform2(), Transform3()])
+            >>> compose[1]=NewTransform() # Replace second transform
+            >>> compose[0:2]=[NewTransform1(), NewTransform2()] # Replace first two transforms
+        """
+        assert isinstance(index, (int, list)), f'The indices should be either list or int type but got {type(index)}'
+        if isinstance(index, list):
+            assert isinstance(value, list), f'The indices should be the same type as values, but got {type(index)} and {type(value)}'
+        if isinstance(index, int): index, value=[index],[value]
+        for i, v in zip(index, value):
+            assert i<len(self.transforms), f'list index {i} out of range {len(self.transforms)}'
+            self.transforms[i]=v
+            
+    def tolist(self):
+        """Convert the list of transforms to a standard Python list
+        Returns:
+            (list): A list containing all the transform objects in the Compose instance
+        Examples:
+            >>> compose=Compose([RandomFlip(), RandomPerspective(), RandomHSV()])
+            >>> transform_list=compose.tolist()
+            >>> print(len(transform_list))
+            3
+        """
+        return self.transforms
+
+    def __repr__(self):
+        """Return a string representation of the Compose object
+        Returns:
+            (str): A string representation of the Compose object, including the list of transforms
+        Examples:
+            >>> transforms=[RandomFlip(), RandomPerspective(degrees=10, translate=0.1, scale=0.1)]
+            >>> compose=Compose(transforms)
+            >>> print(compose)
+            Compose([
+                RandomFlip(),
+                RandomPerspective(degrees=10, translate=0.1, scale=0.1)
+            ])
+        """
+        return f"{self.__class__.__name__}({', '.join(f'{t}' for t in self.transforms)})"
+
+
+def v8_transforms(dataset, imgsz:int, hyp:IterableSimpleNamespace, stretch:bool=False):
+    """Apply a series of image transformations for training
+    
+    This function creates a composition of image augmentation techniques to prepare images for YOLO training. It includes
+    operations such as mosaic, copy-paste, random perspective, mixup and HSV adjustment
+    
+    Args:
+        dataset (Dataset): The dataset object containing image data and annotations
+        imgsz (int): The target image size for resizing
+        hyp (IterableSimpleNamespace): A dict of hyperparameters controlling various aspects of the transformation
+        stretch (bool): If True, applies stretching to the image. If False, use LetterBox resizing
+    Returns:
+        (Compose): A composition of image transformations to be applied to the dataset
+    Examples:
+        >>> dataset=YOLODataset(img_path='path/to/images', imgsz=640)
+        >>> hype=IterableSimpleNamespace(mosaic=1., copy_paste=0.5, degrees=10, translate=0.2, scale=0.9)
+        >>> transforms=v8_transforms(dataset, imgsz=640, hyp=hyp)
+        >>> augmented_data=transforms(dataset[0])
+    """
+    mosaic=Mosaic(dataset, imgsz=imgsz,p=hyp.mosaic)
+    # If not stretch, LetterBox will only be applied if mosaic is not used, i.e., hyp.mosaic=0
+    affine=RandomPerspective(degrees=hyp.degrees, translate=hyp.translate, scale=hyp.scale, shear=hyp.shear, 
+                             perspective=hyp.perspective, pre_transform=None if stretch else LetterBox(new_shape=(imgsz, imgsz)))
+    pre_transform=Compose([mosaic, affine])
+    if hyp.copy_paste_mode=='flip':
+        pre_transform.insert(1, CopyPaste(p=hyp.copy_paste, mode=hyp.copy_paste_mode))
+    else:
+        pre_transform.append(
+            CopyPaste(dataset, pre_transform=Compose([Mosaic(dataset, imgsz=imgsz, p=hyp.mosaic), affine]),
+                      p=hyp.copy_paste, mode=hyp.copy_paste_mode
+                     )
+        )
+    
+    flip_idx=dataset.data.get('flip_idx', []) # for keypoints augmentation
+    if dataset.use_keypoints:
+        kpt_shape=dataset.data.get('kpt_shape',None)
+        if len(flip_idx)==0 and hyp.fliplr>0.:
+            hyp.fliplr=0. # need flip_idx to flip keypoint annotation labels from left to right
+            warnings.warn("No 'flip_idx' array definedin data.yaml, disabling 'fliplr' augmentation")
+        elif flip_idx and (len(flip_idx)!=kpt_shape[0]):
+            raise ValueError(f'data.yaml flip_idx={flip_idx} length must be equal to kpt_shape[0]={kpt_shape[0]}')
+    return Compose(
+        [pre_transform,
+         MixUp(dataset, pre_transform=pre_transform, p=hyp.mixup),
+         CutMix(dataset, pre_transform=pre_transform, p=hyp.cutmix),
+         RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
+         RandomFlip(direction='vertical', p=hyp.flipud, flip_idx=None),
+         RandomFlip(direction='horizontal', p=hyp.fliplr, flip_idx=flip_idx),
+        ]
+    ) # transforms
