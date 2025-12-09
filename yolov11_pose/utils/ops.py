@@ -132,6 +132,28 @@ def ltwh2xywh(x):
     y[...,0]=x[...,0]+(x[...,2]/2) # left top x + half width
     y[...,1]=x[...,1]+(x[...,3]/2) # left top y + half height
     return y
+
+def xyxyxyxy2xywhr(x):
+    """Convert batched Oriented Bounding Boxes (OBB) from [xy1,xy2,xy3,xy4] to [x,y,w,h,rotation] format.
+
+    Args:
+        x (np.ndarray|torch.Tensor): Input box corners with shape (N,8) in [xy1,xy2,xy3,xy4] or segmentation with shape (N,M,2) format 
+            where N is the number of objects and M is the number of contour points per objects.
+    Returns:
+        (np.ndarray|torch.Tensor): Converted data in [cx,cy,w,h,rotation] format with shape (N,5) where rotation values 
+            are in radians from 0 to pi/2
+    """
+    is_torch=isinstance(x, torch.Tensor)
+    points=x.cpu().numpy() if is_torch else x
+    points=points.reshape(len(x), -1, 2) # Nx4x2 where 4 for the 4 corners and 2 for x,y
+    rboxes=[]
+    for pts in points: # each pts is of shape (4,2)
+        # NOTE: Use cv2.minAreaRect to get accurate xywhr,
+        # especially some objects are cut off by augmentation in dataloader
+        (cx,cy),(w,h),angle=cv2.minAreaRect(pts)
+        rboxes.append([cx, cy, w, h, np.pi*angle/180.])
+    return torch.tensor(rboxes, device=x.device, dtype=x.dtype) if is_torch else np.asarray(rboxes)
+    
 def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None, padding:bool=True, xywh:bool=False):
     """
     Rescale bounding boxes from one image shape to another

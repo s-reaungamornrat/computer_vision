@@ -167,3 +167,61 @@ def save_dataset_cache_file(prefix: str, path: Path, x: dict):
             np.save(file, x)
         print(f'{prefix}New cache created: {path}')
     else: warnings.warn(f'{prefix}Cache directory {path.parent} is not writable, cache not saved')
+
+def polygon2mask(imgsz:tuple[int, int], polygons:list[np.ndarray], color:int=1, downsample_ratio:int=1)->np.ndarray:
+    """Convert a list of polygons to a binary mask of the specified image size
+    Args:
+        imgsz (tuple[int,int]): The size of the image (height, width)
+        polygons (list[np.ndarray]): A list of polygons. Each is an array of shape (M,) where M is the number of points such that M%2=0.
+            i.e., [x1,y1,x2,y2,x3,y3,...,xM,yM]
+        color (int, optional): The color value to fill in the polygons on the masks
+        downsample_ratio (int,optional): Downsample step of the mask in pixels
+    Returns:
+        (np.ndarray): A binary mask of the specified image size with the polygon filled in
+    """
+    mask=np.zeros(imgsz, dtype=np.uint8)
+    polygons=np.asarray(polygons, dtype=np.int32) # 1xM
+    polygons=polygons.reshape((polygons.shape[0],-1,2)) # 1xMx2
+    cv2.fillPoly(mask, polygons, color=color)
+    nh, nw=(imgsz[0]//downsample_ratio, imgsz[1]//downsample_ratio)
+    # Note: fillPoly first then resize is trying to keep the same loss calculation method when mask-ratio=1
+    return cv2.resize(mask, (nw,nh))
+
+def polygon2masks_overlap(imgsz:tuple[int,int], segments:list[np.ndarray]|np.ndarray, downsample_ratio:int=1)->tuple[np.ndarray, np.ndarray]:
+    """
+    Convert a set polygons to multilabel/overlap mask
+    Args:
+        imgsz (tuple[int, int]): Image size (height, width)
+        segments (list[np.ndarray]|np.ndarray): A set of polygons as a list of N of Mx2 segments or as a NxMx2 array
+        downsample_ratio (int): Downsample rate in pixel unit
+    Returns:
+        (np.ndarray[int32/int8]): Multilabel/overlap masks of shape (H,W)
+        (np.ndarray[int]): Sorted indices of objects from biggest to smallest of size (N,)
+    """
+    masks=np.zeros((imgsz[0]//downsample_ratio, imgsz[1]//downsample_ratio), dtype=np.int32 if len(segments)>255 else np.uint8)
+    areas, ms=[], []
+    for segment in segments:
+        mask=polygon2mask(imgsz, [segment.reshape(-1)], downsample_ratio=downsample_ratio, color=1)
+        ms.append(mask.astype(masks.dtype)) # a list of HxW 
+        areas.append(mask.sum())
+    areas=np.asarray(areas)
+    index=np.argsort(-areas) # sort from large area to small area
+    ms=np.array(ms)[index] # NxHxW, where N is the number of objects
+    for i in range(len(segments)):
+        mask=ms[i]*(i+1) # assign label 1 to biggest object, 2 to smaller, and so on until the smallest
+        masks=masks+mask
+        masks=np.clip(masks, a_min=0, a_max=i+1)
+    return masks,index
+
+def polygons2masks(imgsz:tuple[int,int], polygons:list[np.ndarray]|np.ndarray, color:int, downsample_ratio:int=1)->np.ndarray:
+    """Convert a list of polygons to a set of binary masks of the specified image size
+    
+    Args:
+        imgsz (tuple[int,int]): The size of the image as (height, width)
+        polygons (list[np.ndarray]|np.ndarray): A list of N polygons (each of size Mx2) or an NxMx2 array of polygons
+        color (int): The color value to fill in the polygons on the masks
+        downsample_ratio (int): Downsample step of the mask
+    Returns:
+        (np.ndarray): NxHxW array representing N of HxW binary masks of the specified image size with the polygons filled in
+    """
+    return np.array([polygon2mask(imgsz, [x.reshape(-1)], color, downsample_ratio) for x in polygons])

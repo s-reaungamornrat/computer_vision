@@ -15,6 +15,9 @@ from computer_vision.yolov11_pose.utils.instance import Instances
 from computer_vision.yolov11_pose.utils.metrics import bbox_ioa
 from computer_vision.yolov11_pose.utils.ops import segment2box
 from computer_vision.yolov11_pose.utils import IterableSimpleNamespace
+from computer_vision.yolov11_pose.utils.ops import xyxyxyxy2xywhr
+
+from .utils import polygon2masks_overlap, polygons2masks
 
 class BaseMixTransform:
     """Base class for mix transformations like CutMix, MixUp, and Mosaic
@@ -1315,3 +1318,150 @@ def v8_transforms(dataset, imgsz:int, hyp:IterableSimpleNamespace, stretch:bool=
          RandomFlip(direction='horizontal', p=hyp.fliplr, flip_idx=flip_idx),
         ]
     ) # transforms
+
+class Format:
+    """A class for formatting image annotations for object detection, instance segmentation, and pose estimation tasks.
+
+    This class standardizes image and instance annotations to be used by the `collate_fn` in DataLoader
+
+    Examples:
+        >>> formatter=Format(bbox_format='xywh', normalize=True, return_mask=True)
+        >>> formatted_labels=formatter(labels)
+        >>> img=formatted_labels['img']
+        >>> bboxes=formatted_labels['bboxes']
+        >>> masks=formatted_labels['masks']
+    """
+    def __init__(self, bbox_format:str='xywh', normalize:bool=True, return_mask:bool=False, return_keypoint:bool=False, return_obb:bool=False,
+                mask_ratio:int=4, mask_overlap:bool=True, batch_idx:bool=True, bgr:float=0.):
+        """Initialize the Format class with given parameters for image and instance annotation formatting
+
+        This class standardizes image and instance annotations for object detection, instance segmentation, and pose estimation tasks, preparing
+        them for use in `collate_fn`
+
+        Args:
+            bbox_format (str): Format for bounding boxes. Options are 'xywh', 'xyxy', 'ltwh'
+            normalize (bool): Whether to normalize bounding boxes to [0,1]
+            return_mask (bool): Whether to return masks for segmentation tasks
+            return_keypoint (bool): Whether to return keypoints for pose estimation tasks
+            return_obb (bool): Whether to return oriented bounding boxes
+            mask_ratio (int): Downsample ratio for masks
+            mask_overlap (bool): Whether to allow mask overlap (i.e., multilabel masks vs multiple binary masks)
+            batch_idx (bool): Whether to keep batch indices
+            bgr (float): Probability of returning BGR images instead of RGB
+        """
+        self.bbox_format=bbox_format
+        self.normalize=normalize
+        self.return_mask=return_mask # set to False when task is not segmentation
+        self.return_keypoint=return_keypoint
+        self.return_obb=return_obb
+        self.mask_ratio=mask_ratio
+        self.mask_overlap=mask_overlap
+        self.batch_idx=batch_idx 
+        self.bgr=bgr
+
+    def _format_segments(self, instances:Instances, cls:np.ndarray, w:int, h:int)->tuple[np.ndarray, Instances, np.ndarray]:
+        """Convert polygon segments to bitmap masks
+        Args:
+            instances (Instances): Object containing segment information
+            cls (np.ndarray): Class labels for each instances of shape (N, 1) where N is the number of objects
+            w (int): Width of the image
+            h (int): Height of the image
+        Returns:
+            (np.ndarray): Bitmap masks with shape (N,H,W) or (1,H,W) if `mask_overlap` is True (i.e., multiple binary masks vs multilabel mask)
+            (Instances): Updated instances object with sorted segments if `mask_overlap` is True (i.e., sorted from biggest to smallest objects)
+            (np.ndarray): Updated class labels, sorted if `mask_overlap` is True (i.e., sorted from biggest to smallest objects)
+        Notes:
+            - If `mask_overlap` is True, masks are overlapped and sorted by area
+            - If `mask_overlap` is False, each mask is represented separately
+            - Masks are downsampled according `mask_ratio`
+        """
+        segments=instances.segments
+        if self.mask_overlap:
+            # masks is of shape (H,W), sorted_idx is of shape (N,) where N is the number of objects
+            masks, sorted_idx=polygon2masks_overlap((h,w), segments, downsample_ratio=self.mask_ratio)
+            masks=masks[None] # changing shape to (1,H,W)
+            instances=instances[sorted_idx]
+            cls=cls[sorted_idx]
+        else:
+            masks=polygons2masks((h,w), segments, color=1, downsample_ratio=self.mask_ratio)
+            
+        return masks, instances, cls
+
+    def _format_img(self, img:np.ndarray)->torch.Tensor:
+        """Format an image for YOLO from a numpy array to a pytorch tensor
+        
+        This function performs the following operations:
+        1. Ensures the image has 3 dimensions (add a channel dimension if needed)
+        2. Transposes the image from HWC to CHW format
+        3. Optionally flips the color channels from RGB to BGR
+        4. Converts the image to a contiguous array
+        5. Converts the numpy array to a pytorch array
+        
+        Args:
+            img (np.ndarray): Input image as a numpy array with shape (H,W,C) or (H,W)
+        Returns:
+            (torch.Tensor): Formatted image as a pytorch tensor with shape (C,H,W)
+        """
+        if img.ndim<3: im=np.expand_dims(img,-1)
+        img=img.transpose(2,0,1)
+        img=np.ascontiguousarray(img[::-1] if (random.uniform(0,1)>self.bgr and img.shape[0]==3) else img)
+        img=torch.from_numpy(img)
+        return img
+    
+    def __call__(self, labels:dict[str, Any])->dict[str, Any]:
+        """Format image annotations for object detection, instance segmentation, and pose estimation tasks
+
+        This method standardizes the image and instance annotations to be used by the `collate_fn` in DataLoader. It processes
+        the input label dicts, converting annotations to the specified format and applying normalization if required
+
+        Args:
+            labels (dict[str, Any]): A dict containing image and annotation data with the following keys:
+                -'img' (np.ndarray): The input image of shape (H,W,C) where C=3 for BGR or 1 for grayscale
+                -'cls' (np.ndarray): Class labels for instances of shape (N,1) where N is the number of objects
+                -'instances' (Instances): An Instances object containing bounding boxes, segments, and keypoints
+        Returns:
+            (dict[str, Any]): A dict with formatted data including
+                -'img' (torch.Tensor): Formatted image tensor
+                -'cls' (torch.Tensor): Class labels
+                -'bboxes' (torch.Tensor): Bounding box in specified format
+                -'masks' (torch.Tensor): Masks if `return_mask` is True
+                -'keypoints' (torch.Tensor): Keypoints if `return_keypoints` is True
+                -'batch_idx' (torch.Tensor): Batch index if `batch_idx` is True
+        Examples:
+            >>> formatter=Format(bbox_format='xywh', normalize=True, return_mask=True)
+            >>> labels={'img':np.ndarray(640,640,3), 'cls':np.array([[0],[1]]), 'instances':Instances(...)}
+            >>> formatted_labels=formatter(labels)
+        """
+        img=labels.pop('img')
+        h, w=img.shape[:2]
+        cls=labels.pop('cls')
+        instances=labels.pop('instances')
+        instances.convert_bbox(format=self.bbox_format)
+        instances.denormalize(w, h)
+        nl=len(instances)
+        
+        if self.return_mask:
+            if nl:
+                masks, instances, cls=self._format_segments(instances, cls, w, h)
+                masks=torch.from_numpy(masks)
+            else:
+                masks=torch.zeros(1 if self.mask_overlap else nl, h//self.mask_ratio, w//self.mask_ratio)
+            labels['masks']=masks # NxHxW for multiple binary mask tensor or 1xHxW multilabel mask tensor
+        labels['img']=self._format_img(img) # CxHxW tensor
+        labels['cls']=torch.from_numpy(cls) if nl else torch.zeros(nl, 1) # Nx1
+        labels['bboxes']=torch.from_numpy(instances.bboxes) if nl else torch.zeros(nl, 4) # Nx4
+        if self.return_keypoint:
+            # if not empty, keypoints is of size NxMx3 where N is the number of objects, M is the number of keypoints per object
+            labels['keypoints']=(torch.empty(0,3) if instances.keypoints is None else torch.from_numpy(instances.keypoints)) 
+            if self.normalize:
+                labels['keypoints'][...,0]/=w
+                labels['keypoints'][...,1]/=h
+        if self.return_obb:
+            labels['bboxes']=xyxyxyxy2xywhr(torch.from_numpy(instances.segments)) if len(instances.segments) else torch.zeros((0,5))
+        # NOTE: need to normalize obb in xywhr format for width-height consistency
+        if self.normalize:
+            labels["bboxes"][:,[0,2]]/=w
+            labels["bboxes"][:,[1,3]]/=h
+        # Then we can use collate_fn
+        if self.batch_idx: labels['batch_idx']=torch.zeros(nl)
+        return labels

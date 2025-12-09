@@ -19,6 +19,7 @@ from computer_vision.yolov11_pose.utils.patches import imread
 from computer_vision.yolov11_pose.cfg import get_cfg
 from computer_vision.yolov11_pose.utils.instance import Instances
 from computer_vision.yolov11_pose.utils.ops import resample_segments
+from .augment import LetterBox, Compose, Format, v8_transforms
 from .utils import IMG_FORMATS, img2label_paths, exif_size, verify_image_label, save_dataset_cache_file, load_dataset_cache_file
 
 class YOLODataset(Dataset):
@@ -98,7 +99,7 @@ class YOLODataset(Dataset):
         elif self.cache=='disk' and self.check_cache_disk(): self.cache_image()
 
         # Transforms        
-        #self.transforms=self.build_transforms(hyp=hyp)
+        self.transforms=self.build_transforms(hyp=hyp)
 
     def get_img_files(self, img_path:str|list[str])->list[str]:
         """Read image files from the specified path
@@ -435,3 +436,59 @@ class YOLODataset(Dataset):
         ) # for evaluation
         if self.rect: label['rect_shape']=self.batch_shapes[self.batch[index]]
         return self.update_labels_info(label)
+
+    def build_transforms(self, hyp:dict|None=None)->Compose:
+        """Build and append transforms to the list
+
+        Args:
+            hyp (dict, optional): Hyperparameters for transforms.
+        Returns:
+            (Compose): Composed transforms
+        """
+        if self.augment:
+            hyp.mosaic=hyp.mosaic if self.augment and not self.rect else 0.0
+            hyp.mixup=hyp.mixup if self.augment and not self.rect else 0.0
+            hyp.cutmix=hyp.cutmix if self.augment and not self.rect else 0.0
+            transforms=v8_transforms(self, self.imgsz, hyp)
+        else: transforms=Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False)])
+        transforms.append(
+            Format(bbox_format='xywh',
+                  normalize=True,
+                  return_mask=self.use_segments,
+                  return_keypoint=self.use_keypoints,
+                  return_obb=self.use_obb,
+                  batch_idx=True,
+                  mask_ratio=hyp.mask_ratio,
+                  mask_overlap=hyp.overlap_mask,
+                  bgr=hyp.bgr if self.augment else 0., # only affect training
+                  )
+        )
+
+        return transforms
+
+    @staticmethod
+    def collate_fn(batch:list[dict])->dict:
+        """Collate data sameples into batches
+        Args:
+            batch (list[dict]): List of dicts containing sample data
+        Returns:
+            (dict): Collated batch with stacked tensors
+        """
+        new_batch={}
+        batch=[dict(sorted(b.items())) for b in batch] # make sure the keys are in the same order
+        keys=batch[0].keys()
+        values=list(zip(*[list(b.values()) for b in batch]))
+        for i, k in enumerate(keys):
+            value=values[i]
+            if k in {'img', 'text_feats'}:
+                value=torch.stack(value, 0) # BxCxHxW
+            elif k=='visuals':
+                value=torch.nn.utils.rnn.pad_sequence(value, batch_first=True)
+            if k in {'masks', 'keypoints', 'bboxes', 'cls', 'segments', 'obb'}:
+                value=torch.cat(value, 0)
+            new_batch[k]=value
+        new_batch['batch_idx']=list(new_batch['batch_idx'])
+        for i in range(len(new_batch['batch_idx'])):
+            new_batch['batch_idx'][i]+=i # add target image index for build_targets()
+        new_batch['batch_idx']=torch.cat(new_batch['batch_idx'], 0)
+        return new_batch
