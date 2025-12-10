@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import torch
 import numpy as np
 from torch.utils.data import Dataset
     
@@ -466,6 +467,10 @@ class YOLODataset(Dataset):
 
         return transforms
 
+    def __getitem__(self, index:int)->dict[str, Any]:
+        """Return transformed label information for given index"""
+        return self.transforms(self.get_image_and_label(index))
+
     @staticmethod
     def collate_fn(batch:list[dict])->dict:
         """Collate data sameples into batches
@@ -475,20 +480,40 @@ class YOLODataset(Dataset):
             (dict): Collated batch with stacked tensors
         """
         new_batch={}
-        batch=[dict(sorted(b.items())) for b in batch] # make sure the keys are in the same order
+        batch=[dict(sorted(b.items())) for b in batch] # make sure the keys are in the same order by sorting each dict by keys
         keys=batch[0].keys()
         values=list(zip(*[list(b.values()) for b in batch]))
         for i, k in enumerate(keys):
-            value=values[i]
+            value=values[i] # tuple of the items for this k from the whole batch
             if k in {'img', 'text_feats'}:
-                value=torch.stack(value, 0) # BxCxHxW
+                value=torch.stack(value, 0) # from tuple of B of CxHxW to BxCxHxW
             elif k=='visuals':
                 value=torch.nn.utils.rnn.pad_sequence(value, batch_first=True)
             if k in {'masks', 'keypoints', 'bboxes', 'cls', 'segments', 'obb'}:
-                value=torch.cat(value, 0)
+                # each item in the batch doesn't have equal amount of objects so we concatenate them all along dim=0
+                # e.g., change bboxes [torch.Size([2, 4]), torch.Size([7, 4]), torch.Size([0, 4]), torch.Size([3, 4]), torch.Size([3, 4])]
+                # to torch.Size([15, 4])
+                # change cls [torch.Size([2, 1]), torch.Size([7, 1]), torch.Size([0, 1]), torch.Size([3, 1]), torch.Size([3, 1])] to torch.Size([15, 1])
+                # change multilabel masks [torch.Size([1, 160, 160]), torch.Size([1, 160, 160]), torch.Size([1, 160, 160]), torch.Size([1, 160, 160]), 
+                # torch.Size([1, 160, 160])] to torch.Size([5, 160, 160])
+                value=torch.cat(value, 0) 
             new_batch[k]=value
+        # After for loop, batch-idx will look somewht like below
+        #  (tensor([0., 0.]),
+        #   tensor([0., 0., 0., 0., 0., 0., 0.]),
+        #   tensor([]),
+        #   tensor([0., 0., 0.]),
+        #   tensor([0., 0., 0.])) 
+        # a tuple of tensor of zeros where the number of zeros equal the number of objects in that item in the batch
         new_batch['batch_idx']=list(new_batch['batch_idx'])
         for i in range(len(new_batch['batch_idx'])):
             new_batch['batch_idx'][i]+=i # add target image index for build_targets()
-        new_batch['batch_idx']=torch.cat(new_batch['batch_idx'], 0)
+        # Add item index (indexing item/image in the batch), so we get batch_idx looking somewhat like below
+        # [tensor([0., 0.]),
+        #  tensor([1., 1., 1., 1., 1., 1., 1.]),
+        #  tensor([]),
+        #  tensor([3., 3., 3.]),
+        #  tensor([4., 4., 4.])]
+        new_batch['batch_idx']=torch.cat(new_batch['batch_idx'], 0) # Then we stack them to a 1D array
+        # looking like tensor([0., 0., 1., 1., 1., 1., 1., 1., 1., 3., 3., 3., 4., 4., 4.])
         return new_batch
