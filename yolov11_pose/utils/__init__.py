@@ -84,3 +84,22 @@ def is_dir_writeable(dir_path: str| Path)->bool:
         (bool): True if the directory is writable, False otherwise
     """
     return os.access(str(dir_path), os.W_OK)
+
+def is_colab():
+    """Check if the current script is running inside a Google Colab notebook.
+
+    Returns:
+        (bool): True if running inside a Colab notebook, False otherwise.
+    """
+    return "COLAB_RELEASE_TAG" in os.environ or "COLAB_BACKEND_VERSION" in os.environ
+
+def is_kaggle():
+    """Check if the current script is running inside a Kaggle kernel.
+
+    Returns:
+        (bool): True if running inside a Kaggle kernel, False otherwise.
+    """
+    return os.environ.get("PWD") == "/kaggle/working" and os.environ.get("KAGGLE_URL_BASE") == "https://www.kaggle.com"
+
+IS_COLAB = is_colab()
+IS_KAGGLE = is_kaggle()

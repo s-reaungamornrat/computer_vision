@@ -4,9 +4,19 @@ import math
 import warnings
 from pathlib import Path
 from typing import Any
+from collections import defaultdict
 
 import torch
 import numpy as np
+
+# An array of sigma values, one per keypoint, modeling how precisely each keypoint can be localized (i.e., smaller sigma for keypoint whose localization is more accurate), used in calculating Object Keypoint Similarity (OKS) -- keypoint equivalent of IoU for object detection
+OKS_SIGMA = (
+    np.array(
+        [0.26, 0.25, 0.25, 0.35, 0.35, 0.79, 0.79, 0.72, 0.72, 0.62, 0.62, 1.07, 1.07, 0.87, 0.87, 0.89, 0.89],
+        dtype=np.float32,
+    )
+    / 10.0
+)
 
 def bbox_ioa(box1:np.ndarray, box2:np.ndarray, iou:bool=False, eps:float=1e-7)->np.ndarray:
     """Calculate the intersection over box2 area given box1 and box2
@@ -519,6 +529,264 @@ class PoseMetrics(DetMetrics):
         for i, s in enumerate(summary):
             s.update({**{k:round(v[i], decimals) for k, v in per_class.items()}})
         return summary
+
+class ConfusionMatrix:
+    """A class for calculating and updating a confusion matrix for object detection and classification tasks
+    """
+    def __init__(self, names:dict[int, str]={}, task:str='detect', save_matches:bool=False):
+        """Initialize a ConfusionMatrix instance.
+
+        Args:
+            names (dict[int, str], optional): Names of classes, used as labels on the plot
+            task (str, optional): Type of task, either 'detect' or 'classify'
+            save_matches (bool, optional): Save the indices of GTs, TPs, FPs, FNs for visualization
+        """
+        self.task=task
+        self.nc=len(names) # number of classes
+        #  The confusion matrix, with dimensions depending on the task.
+        self.matrix = np.zeros((self.nc, self.nc)) if self.task=='classify' else np.zeros((self.nc+1, self.nc+1))
+        self.names=names # name of classes
+        # Contains the indices of ground truths and predictions categorized into TP, FP and FN
+        self.matches={} if save_matches else None
+        
+    def _append_matches(self, mtype:str, batch:dict[str, Any], idx:int)->None:
+        """Append the matches to TP, FP, FN or GT list for the last batch
+
+        This method updates the matches dict by appending specific batch data to the appropriate match type (True Positive,
+        False Positive, or False Negative)
+
+        Args:
+            mtype (str): Match type identifier ('TP', 'FP', 'FN', or 'GT')
+            batch (dict[str, Any]): Batch data containing detection results with keys like 'bboxes', 'cls', 'conf',
+                'keypoints', and 'masks'
+            idx (int): Index of the specific detection to append from the batch
+        Notes:
+            For masks, handles both overlap and non-overlap cases. When masks.max()>1., it indicates overlap_mask=True
+            with shape (1, H, W), otherwise uses direct indexing.
+        """
+        if self.matches is None: return
+        for k, v in batch.items():
+            if k in {'bboxes', 'cls', 'conf', 'keypoints'}: self.matches[mtype][k]+=v[[idx]]
+            elif k=='masks':
+                # NOTE: masks.max()>1.0 means overlap_mask=True with (1, H, W) shape
+                self.matches[mtype][k]+=[v[0]==idx+1] if v.max()>1. else [v[idx]]
+                
+    def process_cls_preds(self, preds:list[torch.Tensor], targets:list[torch.Tensor])->None:
+        """Update confusion matrix for classification task
+
+        Args:
+            preds (list[torch.Tensor]): Predicted class labels, each of size (N, min(nc, 5))
+            targets (list[torch.Tensor]): Ground truth class labels, each of size (N,1)
+        """
+        preds, targets=torch.cat(preds)[:,0], torch.cat(targets)
+        for p, t in zip(preds.cpu().numpy(), targets.cpu().numpy()):
+            self.matrix[p][t]+=1
+
+    def process_batch(self, detections:dict[str, torch.Tensor], batch:dict[str, Any], conf:float=0.25, iou_thres:float=0.45)->None:
+        """Update confusion matrix for object detection task
+
+        Args:
+            detections (dict[str, torch.Tensor]): Dict containing detected bounding boxes and their associated information. Should
+                contain 'cls', 'conf', and 'bboxes' keys, where 'bboxes' can be an array of size (N,4) for regular boxes or an 
+                array of size (N,5) for oriented bounding boxes (OBB) with angle
+            batch (dict[str, Any]): Batch dict containing ground truth data with 'bboxes' being an array of size (M,4) or (M,5) and 
+                'cls' of size (M), where M is the number of ground truth objects
+            conf (float, optional): Confidence threshold for detections
+            iou_thres (float, optional): IoU threshold for matching detections to ground truth
+        """
+        gt_cls, gt_bboxes=batch['cls'], batch['bboxes']
+        if self.matches is not None: # only if visualization is enabled
+            self.matches={k:defaultdict(list) for k in {'TP', 'FP', 'FN', 'GT'}}
+            for i in range(gt_cls.shape[0]):
+                self._append_matches('GT', batch, i) # store GT
+        is_obb=gt_bboxes.shape[1]==5 # check if boxes contains angle for OBB
+        # apply 0.25 if default val conf is passed
+        conf=0.25 if conf in {None, 0.01 if is_obb else 0.001} else conf
+        no_pred=detections['cls'].shape[0]==0
+        if gt_cls.shape[0]==0: # Check if labels is empty
+            if not no_pred:
+                detections={k:detections[k][detections['conf']>conf] for k in detections}
+                detection_classes=detections['cls'].int().tolist()
+                for i, dc in enumerate(detection_classes):
+                    self.matrix[dc, self.nc]+=1 # FP
+                    self._append_matches('FP', detections, i)
+            return
+        if no_pred:
+            gt_classes=gt_cls.int().tolist()
+            for i, gc in enumerate(gt_classes):
+                self.matrix[self.nc, gc]+=1 # FN
+                self._append_matches('FN', batch, i)
+            return
+
+        detections={k:detections[k][detections['conf']>conf] for k in detections}
+        gt_classes=gt_cls.int().tolist()
+        detection_classes=detections['cls'].int().tolist()
+        bboxes=detections['bboxes']
+        iou=batch_probiou(gt_bboxes, bboxes) if is_obb else box_iou(gt_bboxes, bboxes)
+
+        x=torch.where(iou>iou_thres)
+        if x[0].shape[0]:
+            matches=torch.cat((torch.stack(x, 1), iou[x[0],x[1]][:,None]),1).cpu().numpy()
+            if x[0].shape[0]>1:
+                matches=matches[matches[:,2].argsort()[::-1]]
+                matches=matches[np.unique(matches[:,1], return_index=True)[1]]
+                matches=matches[matches[:,2].argsort()[::-1]]
+                matches=matches[np.unique(matches[:,0], return_index=True)[1]]
+            else: matches=np.zeros((0,3))
+
+        n=matches.shape[0]>0
+        m0, m1, _=matches.transpose().astype(int)
+        for i, gc in enumerate(gt_classes):
+            j=m0==i
+            if n and sum(j)==1:
+                dc=detection_classes[m1[j].item()]
+                self.matrix[dc, gc]+=1 # TP if class is correct else both an FP and FN
+                if dc==gc: self._append_matches('TP', detections, m1[j].item())
+                else:
+                    self._append_matches('FP', detections, m1[j].item())
+                    self._append_matches('GT', batch, i)
+            else:
+                self.matrix[self.nc, gc]+=1 # FN
+                self._append_matches('FN', batch, i)
+                
+        for i, dc in enumerate(detection_classes):
+            if not any(m1==i): 
+                self.matrix[dc, self.nc]+=1 # FP
+                self._append_matches("FP", detections, i)
+                
+    def matrix(self):
+        """Return the confusion matrix"""
+        return self.matrix
+
+    def tp_fp(self)->tuple[np.ndarray, np.ndarray]:
+        """Return true positives and false positives.
+        Returns:
+            (np.ndarray): True positives of size (nc+1,) or (nc,) if task is classification (ignoring background)
+            (np.ndarray): False positives of size (nc+1,) or (nc,) if task is classification (ignoring background)
+        """
+        tp=self.matrix.diagonal() # true positive
+        fp=self.matrix.sum(1)-tp # false positive
+        return (tp, fp) if self.task=='classify' else (tp[:-1], fp[:-1]) # remove background class if task=detect
+
+    def plot_matches(self, img:torch.Tensor, im_file: str, save_dir:Path)->None:
+        """Plot grid of GT, TP, FP, FN for each image
+        Args:
+            img (torch.Tensor): Image to plot onto
+            im_file (str): Image filename to save visualizations
+            save_dir (Path): Location to save the visualizations to
+        """
+        if not self.matches: return
+
+        from .ops import xyxy2xywh
+        from .plotting import plot_images
+
+        # Create batch of 4 (GT, TP, FP, FN)
+        labels=defaultdict(list) # Create a dict where values of every new key starts with an empty list
+        for i, mtype in enumerate(['GT', 'FP', 'TP', 'FN']):
+            mbatch=self.matches[mtype]
+            if 'conf' not in mbatch: mbatch['conf']=torch.tensor([1.]*len(mbatch['bboxes']), device=img.device)
+            mbatch['batch_idx']=torch.ones(len(mbatch['bboxes']), device=img.device)*i
+            for k in mbatch.keys(): labels[k]+=mbatch[k]
+
+        labels={k:torch.stack(v, 0) if len(v) else torch.empty(0) for k, v in labels.items()}
+        (save_dir/"visualizations").mkdir(parents=True, exist_ok=True)
+        plot_images(labels, im.repeat(4,1,1,1), paths=['Ground Truth', 'False Positives', 'True Positive', 'False Negative'],
+                    fname=save_dir/'visualizations'/Path(im_file).name, names=self.names, max_subplots=4, conf_thres=0.001)
+
+    def plot(self, normalize:bool=True, save_dir:str=""):
+        """Plot the confusion matrix using matplotlib and save it to a file
+        Args:
+            normalize (bool, optional): Whether to normalize the confusion matrix
+            save_dir (str, optional): Directory where the plot will be saved
+        """
+        import matplotlib.pyplot as plt # scope for improved speed
+
+        array=self.matrix/((self.matrix.sum(0).reshape(1,-1)+1e-9) if normalize else 1) # normalize column
+        names, n=list(self.names.values()), self.nc
+        if self.nc>=100: # downsample for large number of classes
+            k=max(2, self.nc//60) # step size for downsampling, always > 1
+            keep_idx=slice(None, None, k) # create slice instead of array
+            names=names[keep_idx] # slice class names
+            array=array[keep_idx, :][:, keep_idx] # slice matrix rows and cols
+            n=(self.nc+k-1)//k # number of retained classes
+        nc=nn=n=n if self.task=='classify' else n+1 # adjust for background if needed
+        ticklabels=([*names, "background"]) if (0<nn<99) and (nn==nc) else 'auto'
+        xy_ticks=np.arange(len(ticklabels))
+        tick_fontsize=max(6, 15-0.1*nc) # Minimum size is 6
+        label_fontsize=max(6, 12-0.1*nc)
+        title_fontsize=max(6, 12-0.1*nc)
+        btm=max(0.1, 0.25-0.001*nc) # minimum value is 0.1
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore') # suppress empty matrux RuntimeWarning: All-NaN slice encountered
+            im=ax.imshow(array, cmap='Blues', vmin=0., interpolation='none')
+            ax.xaxis.set_label_position('bottom')
+            if nc<30: # Add score for each cell of confusion matrix
+                color_threshold=0.45*(1 if normalize else np.nanmax(array)) # text color threshold
+                for i, row in enumerate(array[:nc]):
+                    for j, val in enumerate(row[:nc]):
+                        val=array[i,j]
+                        if np.isnan(val): continue
+                        ax.text(j, i, f'{val:.2f}' if normalize else f'{int(val)}', ha='center', va='center', fontsize=10,
+                               color='white' if val>color_threshold else 'black')
+            cbar=fig.colorbar(im, ax=ax, fraction=0.046, pad=0.05)
+        title='Confusion Matrix'+" Normalized"*normalize
+        ax.set_xlabel('True', fontsize=label_fontsize, labelpad=10)
+        ax.set_ylabel('Predicted', fontsize=label_fontsize, labelpad=10)
+        ax.set_title(title, fontsize=title_fontsize, labelpad=10)
+        ax.set_xticks(xy_ticks)
+        ax.set_yticks(xy_ticks)
+        ax.tick_params(axis='x', bottom=True, top=False, labelbottom=True, labeltop=False)
+        ax.tick_params(axis='y', left=True, right=False, labelleft=True, labelright=False)
+        if ticklabels!='auto':
+            ax.set_xticklabels(ticklabels, fontsize=tick_fontsize, rotation=90, ha='center')
+            ax.set_yticklabels(ticklabels, fontsize=tick_fontsize)
+        for s in {'left', 'right', 'bottom', 'top', 'outline'}:
+            if s!='outline': ax.spines[s].set_visible(False) # confusion matrix plot do not have outline
+            cbar.ax.spines[s].set_visible(False)
+        fig.subplots_adjust(left=0, right=0.84, top=0.94, bottom=btm) # Adjust layout to ensure equal margins
+        plot_fname=Path(save_dir)/f"{title.lower().replace(' ','_')}.png"
+        fig.savefig(plot_fname, dpi=250)
+        plt.close()
+        if on_plot: on_plot(plot_fname)
+
+    def print(self):
+        """Print the confusion matrix to the console"""
+        print('In utils.metrics.ConfusionMatrix.print')
+        for i in range(self.matrix.shape[0]): print(" ".join(map(str, self.matrix[i])))
+            
+    def summary(self, normalize:bool=False, decimals:int=5)->list[dict[str, float]]:
+        """Generate a summarized representation of the confusion matrix as a list of dicts, with optional normalization. This is
+        useful for exporting the matrix to various formats such as CSV, XML, HTML, JSON, or SQL
+
+        Args:
+            normalize (bool): Whether to normalize the confusion matrix values
+            decimals (int): Number of decimal places to round the output values to
+        Returns:
+            (list[dict[str, float]]): A list of dicts, each representing one predicted class with corresponding values for all actual 
+                classes
+        Examples:
+            >>> results=model.val(data='coco8.yaml', plots=True)
+            >>> cm_dict=results.confusion_matrix.summary(normalize=True, decimals=5)
+            >>> print(cm_dict)
+        """
+        import re
+        names=list(self.names.values() if self.task=='classify' else [*list(self.names.values()), 'background'])
+        clean_names, seen=[], set()
+        for name in names:
+            # replacing any characters in names that is not a-z, A-Z, 0-9 and _ by _
+            clean_name=re.sub(r"[^a-zA-Z0-9_]", "_", name)
+            original_clean=clean_name
+            counter=1
+            while clean_name.lower() in seen:
+                clean_name=f'{original_clean}_{counter}'
+                counter+=1
+            seen.add(clean_name.lower())
+            clean_names.append(clean_name)
+        array=(self.matrix/((self.matrix.sum(0).reshape(1, -1)+1e-9) if normalize else 1)).round(decimals)
+        return [
+            dict({'Predicted':clean_names[i]}, **{clean_names[j]:array[i,j] for j in range(len(clean_names))}) 
+            for i in range(len(clean_names))
+        ]
         
 def smooth(y:np.ndarray, f:float=0.05)->np.ndarray:
     """Box filter of fraction f"""

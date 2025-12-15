@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import yaml
 import warnings
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -225,3 +227,30 @@ def polygons2masks(imgsz:tuple[int,int], polygons:list[np.ndarray]|np.ndarray, c
         (np.ndarray): NxHxW array representing N of HxW binary masks of the specified image size with the polygons filled in
     """
     return np.array([polygon2mask(imgsz, [x.reshape(-1)], color, downsample_ratio) for x in polygons])
+
+def check_det_dataset(dataset:str)->dict[str, Any]:
+    """Read data configuration
+    Args:
+        dataset (str): Path to dataset descriptor file in YAML format
+    Returns:
+        (dict[str, Any]): Parsed dataset information and paths
+    """
+    if isinstance(dataset, str): dataset=Path(dataset)
+    if isinstance(dataset, Path):
+        assert dataset.is_file(), f'{dataset} does not exist'
+        with open(dataset, encoding="utf-8") as f: data=yaml.load(f, Loader=yaml.SafeLoader)
+    # Check
+    for k in 'train','val':
+        if k not in data:
+            if k!='val' or 'validation' not in data:
+                raise SyntaxError(f'{dataset} "{k}:" key missing.\n "train" and "val" are required in all data YAMLs')
+            warnings.warn("renaming data YAML 'validation' key to 'val' to match YOLO format")
+            data['val']=data.pop('validation')
+    if 'names' not in data and 'nc' not in data:
+        raise SyntaxError(f'{dataset} key missing.\n either "names" or "nc" are required in all data YAMLs ')
+    if 'names' in data and 'nc' in data and len(data['name'])!=data['nc']:
+        raise SyntaxError(f'{dataset} "names" length {len(data["names"])} and nc:{data["nc"]} must match')
+    if "names" not in data: data["names"]=[f'class_{i}' for i in range(data['nc'])]
+    else: data['nc']=len(data['names'])
+    data['channels']=data.get("channels", 3) # default to 3
+    return data

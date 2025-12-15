@@ -6,6 +6,19 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+def unwrap_model(m:nn.Module)->nn.Module:
+    """Unwrap compliled and parallel models to get the base model
+    Args
+        m (nn.Module): A model that may be wrapped by torch.compile (._orig_mod) or parallel wrappers such as DataParallel/DistributedDataParallel
+            (.module)
+    Returns:
+        (nn.Module): The unwrapped based model without compile or parallel wrappers
+    """
+    while True:
+        if hasattr(m, "_orig_mod") and isinstance(m._orig_mod, nn.Module): m=m._orig_mod
+        elif hasattr(m, "module") and isinstance(m.module, nn.Module): m=m.module
+        else: return m
+
 def initialize_weights(model):
     """Initialize model weights to random values"""
     for m in model.modules():

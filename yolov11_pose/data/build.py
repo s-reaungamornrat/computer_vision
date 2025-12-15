@@ -27,7 +27,7 @@ def build_yolo_dataset(args:Namespace, cfg:IterableSimpleNamespace, task:str, im
         img_path (str): Path to image folder, e.g., data/coco/images/train2017
         batch (int): Batch size 
         data (dict[str,Any]|str): Data configuration file or dict
-        mode (str): Data usage mode, including 'train' and 'validation' 
+        mode (str): Data usage mode, including 'train' and 'val' 
         rect (bool): Whether to use rectangle image pre-processing
         stride (int): Model stride
         channels (int): Number of image color channels
@@ -35,7 +35,7 @@ def build_yolo_dataset(args:Namespace, cfg:IterableSimpleNamespace, task:str, im
         (torch.utils.data.Dataset): Dataset
     """
     assert task in ['pose','detect','segment'],f'task must be "pose", "detect", or "segment" but got {task}'
-    assert mode in ['train', 'validation'], f'mode must be "train" or "validation", but got {mode}'
+    assert mode in ['train', 'val'], f'mode must be "train" or "val", but got {mode}'
     return YOLODataset(args=args, data=data, task=task, img_path=img_path, imgsz=cfg.imgsz, 
                        cache=cfg.cache or None, augment=mode=='train', hyp=cfg, prefix='',
                        rect=cfg.rect or rect, batch_size=args.batch_size or hyp.batch, stride=stride,
