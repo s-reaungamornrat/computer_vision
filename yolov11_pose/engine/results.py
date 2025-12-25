@@ -228,8 +228,10 @@ class Results:
         self.orig_img=orig_img # HxWxC
         self.orig_shape=orig_img.shape[:2]
 
-        self.boxes=Boxes(boxes, self.orig_shape) if boxes is not None else None 
+        self.boxes=Boxes(boxes, self.orig_shape) if boxes is not None else None # native size
+        self.masks=Masks(masks, self.orig_shape) if masks is not None else None # native size of imgsz size
         self.keypoints=Keypoints(keypoints, self.orig_shape) if keypoints is not None else None
+        self.obb=OBB(obb, self.orig_shape) if obb is not None else None
         self.speed=speed if speed is not None else {'preprocess':None, 'inference':None, 'postprocess':None}
         self.names=names
         self.path=path
@@ -319,4 +321,225 @@ class Results:
         if boxes is not None: self.boxes=Boxes(ops.clip_boxes(boxes, self.orig_shape), self.orig_shape)
         if keypoints is not None: self.keypoints=Keypoints(keypoints, self.orig_shape)
             
-            
+    def save_txt(self, txt_file: str | Path, save_conf: bool = False) -> str:
+        """Save detection results to a text file.
+
+        Args:
+            txt_file (str | Path): Path to the output text file.
+            save_conf (bool): Whether to include confidence scores in the output.
+
+        Returns:
+            (str): Path to the saved text file.
+
+        Examples:
+            >>> from ultralytics import YOLO
+            >>> model = YOLO("yolo11n.pt")
+            >>> results = model("path/to/image.jpg")
+            >>> for result in results:
+            >>>     result.save_txt("output.txt")
+
+        Notes:
+            - The file will contain one line per detection or classification with the following structure:
+              - For detections: `class confidence x_center y_center width height`
+              - For classifications: `confidence class_name`
+              - For masks and keypoints, the specific formats will vary accordingly.
+            - The function will create the output directory if it does not exist.
+            - If save_conf is False, the confidence scores will be excluded from the output.
+            - Existing contents of the file will not be overwritten; new results will be appended.
+        """
+        is_obb = self.obb is not None
+        boxes = self.obb if is_obb else self.boxes
+        masks = self.masks
+        probs = self.probs
+        kpts = self.keypoints
+        texts = []
+        if probs is not None:
+            # Classify
+            [texts.append(f"{probs.data[j]:.2f} {self.names[j]}") for j in probs.top5]
+        elif boxes:
+            # Detect/segment/pose
+            for j, d in enumerate(boxes):
+                c, conf, id = int(d.cls), float(d.conf), int(d.id.item()) if d.is_track else None
+                line = (c, *(d.xyxyxyxyn.view(-1) if is_obb else d.xywhn.view(-1)))
+                if masks:
+                    seg = masks[j].xyn[0].copy().reshape(-1)  # reversed mask.xyn, (n,2) to (n*2)
+                    line = (c, *seg)
+                if kpts is not None:
+                    kpt = torch.cat((kpts[j].xyn, kpts[j].conf[..., None]), 2) if kpts[j].has_visible else kpts[j].xyn
+                    line += (*kpt.reshape(-1).tolist(),)
+                line += (conf,) * save_conf + (() if id is None else (id,))
+                texts.append(("%g " * len(line)).rstrip() % line)
+
+        if texts:
+            Path(txt_file).parent.mkdir(parents=True, exist_ok=True)  # make directory
+            with open(txt_file, "a", encoding="utf-8") as f:
+                f.writelines(text + "\n" for text in texts)
+
+        return str(txt_file)  
+
+class OBB:
+    """A class for storing and manipulating Oriented Bounding Boxes (OBB)
+
+    This class provides functionality to handle oriented bounding boxes, including conversion between different formats, normalization, and 
+    access to various properties of the boxes. It supports both tracking and non-tracking scenarios
+
+    Examples:
+        >>> boxes=torch.tensor([[100,50,150,100,30,0.9,0]]) # xywhr, conf, cls
+        >>> obb=OBB(boxes, orig_shape=(480,640))
+        >>> print(obb.xyxyxyxy)
+        >>> print(obb.conf)
+    """
+    def __int__(self, boxes:torch.Tensor|np.ndarray, orig_shape:tuple[int, int])->None:
+        """Initialize an OBB(Oriented Bounding Box) intsnace with oriented bounding box data and original image shape.
+
+        This class stores and manipulates OBB for object detection tasks. It provides various properties and methods to access and transform
+        the OBB data
+
+        Args:
+            boxes (torch.Tensor | np.ndarray): A tensor or numpy array containing the detection boxes, with shape (num_boxes, 7) or (num_boxes, 8).
+                The last two columns contain confidence and class values. If present, the third last column contains track IDs, and the fifth
+                column contains rotation, i.e., [x, y, w, h, rotation, confidence, class] or [x, y, w, h, rotation, track_id, confidence, class]
+            orig_shape (tuple[int, int]): Original image size, in the format (height, width)
+        """
+        if boxes.ndim==1: boxes=boxes[None,:]
+        n=boxes.shape[-1]
+        assert n in {7,8}, f'expected 7 or 8 values but got {n}' # xywh, rotation, track_id, conf, cls
+        self.is_track=n==8
+        self.orig_shape=orig_shape
+        self.data=boxes
+
+    @property
+    def xywhr(self)->torch.Tensor | np.ndarray:
+        """Return boxes in [x_center, y_center, width, height, rotation] format
+        Returns:
+            (torch.Tensor|np.ndarray): A tensor or numpy array containing the oriented bounding boxes with format 
+                [x_center, y_center, width, height, rotation]. The shape is (N,5) where N is the number of boxes.
+        Examples:
+            >>> results=model("image.jpg")
+            >>> obb=results[0].obb
+            >>> xywhr=obb.xywhr
+            >>> print(xywhr.shape)
+            torch.Size([3,5])
+        """
+        return self.data[:,:5]
+
+    @property
+    def conf(self)->torch.Tensor|np.ndarray:
+        """Return the confidence scores for OBB
+
+        This property retrieves the confidence values associated with each OBB detection. The confidence score represents teh model's certainty in
+        the detection
+        
+        Returns:
+            (torch.Tensor | np.ndarray): A tensor or numpy array of shape (N,) containing confidence socres for N detections, where each score is 
+                in the range [0,1]
+        """
+        return self.data[:,-2]
+        
+    @property
+    def cls(self)->torch.Tensor|np.ndarray:
+        """Return the class values of the oriented bounding boxes
+        Returns:
+            (torch.Tensor|np.ndarray): A tensor or numpy array containing the class values for each oriented bounding box. The shape is (N,), 
+                where N is the number of boxes\
+        """
+        return self.data[:,-1]
+
+    @property
+    def id(self)->torch.Tensor|np.ndarray|None:
+        """Return the tracking IDs of the oriented bounding boxes (if available)
+        Returns:
+            (torch.Tensor|np.ndarray|None): A tensor or numpy array containing the tracking IDs for each OBB. Returns None if tracking IDs
+                are not available
+        """
+        return self.data[:,-3] if self.is_track else None
+
+    
+    @property
+    @lru_cache(maxsize=2)
+    def xyxyxyxy(self)->torch.Tensor|np.ndarray:
+        """Convert OBB format to 8-point (xyxyxyxy) coordinate format for rotated bounding boxes
+        Returns:
+            (torch.Tensor | np.ndarray): Rotated bounding boxes in xyxyxyxy format with shape (N, 4, 2), where N is the number of boxes, 
+                4 for the four corners, and 2 for x,y. Each box is represented by 4 points (x,y), starting from top-left corner and moving 
+                clockwise
+        """
+        return ops.xywhr2xyxyxyxy(self.xywhr)
+
+    @property
+    @lru_cache(maxsize=2)
+    def xyxyxyxyn(self)->torch.Tensor|np.ndarray:
+        """Convert rotated bounding boxes to normalized xyxyxyxy format
+
+        Returns:
+            (torch.Tensor|np.ndarray): Normalized rotated bounding boxes in xyxyxyxy format with shape (N, 4, 2), where
+                N is the number of boxes. Each box is represented by 4 corners (x, y), normalized to relative to the original 
+                image dimensions
+        """
+        xyxyxyxyn=self.xyxyxyxy.clone() if isinstance(self.xyxyxyxy, torch.Tensor) else np.copy(self.xyxyxyxy)
+        xyxyxyxyn[...,0]/=self.orig_shape[1]
+        xyxyxyxyn[...,1]/=self.orig_shape[0]
+        return xyxyxyxyn
+
+    @property
+    @lru_cache(maxsize=2)
+    def xyxy(self)->torch.Tensor|np.ndarray:
+        """Convert oriented bounding boxes (OBB) to axis-aligned bounding boxes in xyxy format
+
+        This property calculates the minimal enclosing rectangle for each oriented bounding box and returns it in xyxy format
+        (x1, y1, x2, y2). This is useful for operations that require axis-aligned bounding boxes, such as IoU calculation with 
+        non-rotated boxes.
+
+        Returns:
+            (torch.Tensor|np.ndarray): Axis-aligned bounding boxes in xyxy format with shape (N,4), where N is the number of boxes. 
+                Each row contains [x1, y1, x2, y2] coordinates.
+        Notes:
+            - This method approximates the OBB by its minimal enclosing rectangle
+            - The returned format is compatible with standard obect detection metrics and visualization tools
+            - This propertu uses caching to improve performace for repeated access
+        """
+        x=self.xyxyxyxy[...,0]
+        y=self.xyxyxyxy[...,1]
+        return (torch.stack([x.amin(1), y.amin(1), x.amax(1), y.amax(1)], -1)
+               if isinstance(x, torch.Tensor)
+               else np.stack([x.min(1), y.min(1), x.max(1), y.max(1)],-1)
+               )
+        
+class Masks:
+    """A class for storing and manipulating detection masks
+
+    This class provides functionality for handling segmentation masks, including methods for converting between pixel and normalized coordinates
+
+    Examples:
+        >>> masks_data=torch.rand(1,160,160)
+        >>> orig_shape=(720,1280)
+        >>> masks=Masks(masks_data, orig_shape)
+        >>> pixel_coords=masks.xy
+        >>> normalized_coords=masks.xyn
+    """
+    def __init__(self, masks:torch.Tensor|np.ndarray, orig_shape:tuple[int, int])->None:
+        """Initialize the Masks class with detection mask data and the original image shape
+        Args:
+            masks (torch.Tensor|np.ndarray): Detection masks with shape (num_masks, height, width)
+            orig_shape (tuple[int,int]): The original image shape as (height, width). Used for normalization
+        """
+        if masks.ndim==2: masks==masks[None,:]
+        self.data=masks
+        self.orig_shape=orig_shape
+
+    @property
+    @lru_cache(maxsize=1)
+    def xyn(self)->list[np.ndarray]:
+        """Return normalized xy-coordinates of the segmentation masks
+
+        This property calculates and caches the normalized xy-coordinates of the segmentation masks. The coordinates are normalized relative to the 
+        original image shape
+
+        Returns:
+            (list[np.ndarray]): A list of numpy arrays, where each array contains the normalized xy-coordinates of a single mask. Each array has 
+                shape (N,2) where N is the number of points in the mask contour
+        """
+        return [
+            ops.scale_coords(self.data.shape[1:], x, self.orig_shape, normalize=True)
+            for x in ops.masks2segments(self.data)
+        ]

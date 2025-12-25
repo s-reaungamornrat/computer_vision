@@ -18,6 +18,25 @@ OKS_SIGMA = (
     / 10.0
 )
 
+def kpt_iou(kpt1:torch.Tensor, kpt2:torch.Tensor, area:torch.Tensor, sigma:list[float], eps:float=1e-7)->torch.Tensor:
+    """Calculate Object Keypoint Similarity (OKS)
+    Args:
+        kpt1 (torch.Tensor): A tensor of shape (N, 17, 3) representing ground truth keypoints
+        kpt2 (torch.Tensor): A tensor of shape (M, 17, 3) representing predicted keypoints
+        area (torch.Tensor): A tensor of shape (N,) representing bounding box areas from grough truth
+        sigma (list): A list containing 17 values representing keypoint scales
+        eps (float, optional): A small value to avoid division by zero
+    Returns:
+        (torch.Tensor): A tensor of shape (N, M) representing keypoint similarities
+    """
+    # (Nx1x17 - Mx17)->NxMx17
+    d=(kpt1[:,None,:,0]-kpt2[...,0]).pow(2) + (kpt1[:,None,:,1]-kpt2[...,1]).pow(2) # (N,M,17)
+    sigma=torch.tensor(sigma, device=kpt1.device, dtype=kpt1.dtype) # (17,)
+    kpt_mask=kpt1[...,2]!=0 # (N,17)
+    e=d/((2*sigma).pow(2)*(area[:,None,None]+eps)*2) # from cocoeval
+    #       (N,M,17)*(N,1,17) -sum-> (N,M)       /  (N,1)
+    return ((-e).exp()*kpt_mask[:,None]).sum(-1) / (kpt_mask.sum(-1)[:,None]+eps)
+
 def bbox_ioa(box1:np.ndarray, box2:np.ndarray, iou:bool=False, eps:float=1e-7)->np.ndarray:
     """Calculate the intersection over box2 area given box1 and box2
     Args:

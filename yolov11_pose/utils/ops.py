@@ -151,8 +151,42 @@ def xyxyxyxy2xywhr(x):
         # NOTE: Use cv2.minAreaRect to get accurate xywhr,
         # especially some objects are cut off by augmentation in dataloader
         (cx,cy),(w,h),angle=cv2.minAreaRect(pts)
+        # see definition of angle from
+        # https://namkeenman.wordpress.com/2015/12/18/open-cv-determine-angle-of-rotatedrect-minarearect/
+        # https://theailearner.com/tag/cv2-minarearect/
         rboxes.append([cx, cy, w, h, np.pi*angle/180.])
     return torch.tensor(rboxes, device=x.device, dtype=x.dtype) if is_torch else np.asarray(rboxes)
+
+def xywhr2xyxyxyxy(x):
+    """Convert batched Oriented Bounding Boxes (OBB) from [xywh, rotation] to [xy1,xy2,xy3,xy4] format
+    Args:
+        x (torch.Tensor|np.ndarray): Boxes in [cx,cy,w,h,rotation] format with shape (N,5) or (B,N,5). Rotation values should be in radians from
+            0 to pi/2.
+    Returns:
+        (torch.Tensor|np.ndarray): Converted corner points with shape (N, 4, 2) or (B, N, 4, 2) where N is the number of boxes, 
+            4 for the four corners, and 2 for x,y. Each box is represented by 4 points (x,y), starting from top-left corner and moving clockwise
+    TODO:
+        Check with cv2.minAreaRect and cv2.boxPoints whether the return points in the order defined above and whether the angle in radian between 0 to pi/2. 
+        This function is used as a reverse function for xyxyxyxy2xywhr
+    """
+    cos, sin, cat, stack=(
+        (torch.cos, torch.sin, torch.cat, torch.stack)
+        if isinstance(x, torch.Tensor) else
+        (np.cos, np.sin, np.concatenate, np.stack)
+    )
+
+    ctr=x[...,:2] # (N,2) center x,y
+    w, h, angle=(x[..., i:i+1] for i in range(2,5)) # (N,1)
+    cos_value, sin_value=cos(angle), sin(angle)
+    vec1=[(w/2)*cos_value, (w/2)*sin_value]
+    vec2=[(-h/2)*sin_value, (h/2)*cos_value]
+    vec1=cat(vec1, -1) # (N,2)
+    vec2=cat(vec2, -1) # (N,2)
+    pt1=ctr+vec1+vec2
+    pt2=ctr+vec1-vec2
+    pt3=ctr-vec1-vec2
+    pt4=ctr-vec1+vec2
+    return stack([pt1, pt2, pt3, pt4], -2) #  (...,4,2)
     
 def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None, padding:bool=True, xywh:bool=False):
     """
@@ -318,3 +352,14 @@ def resample_segments(segments, n:int=1000):
         x=np.insert(x, np.searchsorted(x, xp), xp) if len(s)<n else x
         segments[i]=(np.concatenate([np.interp(x, xp, s[:,i]) for i in range(2)], dtype=np.float32).reshape(2,-1).T) # segment xy
     return segments
+
+def masks2segments(masks:np.ndarray|torch.Tensor, strategy:str='all')->list[np.ndarray]:
+    """Convert masks to segments using contour detection
+
+    Args:
+        masks (np.ndarray|torch.Tensor): Binary masks with shape ?(num_object, height, width)???
+        strategy (str): Segmentation strategy, either 'all' or 'largest'
+    Returns:
+        (list[np.ndarray]): List of segment masks as float32 arrays
+    """
+    
