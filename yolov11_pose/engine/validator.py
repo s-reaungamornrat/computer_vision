@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from computer_vision.yolov11_pose.cfg import get_cfg
+from computer_vision.yolov11_pose.utils.plotting import plot_images
 from computer_vision.yolov11_pose.utils.checks import check_imgsz
 from computer_vision.yolov11_pose.utils.metrics import DetMetrics, ConfusionMatrix, box_iou
 from computer_vision.yolov11_pose.data.utils import check_det_dataset
@@ -240,3 +241,111 @@ class DectectionValidator:
                names=self.names,
                boxes=torch.cat([predn['bboxes'], predn['conf'].unsqueeze(-1), predn['cls'].unsqueeze(-1)], dim=1),
                ).save_txt(file, save_conf=save_conf)
+
+    def update_metrics(self, preds:list[dict[str, torch.Tensor]], batch:dict[str, Any])->None:
+        """Update metrics with new predictions and ground truth
+        
+        Args:
+            preds (list[dict[str, torch.Tensor]]): List of predictions from the model
+            batch (dict[str, Any]): Batch data containing ground truth
+        """
+        for si, pred in enumerate(preds):
+            self.seen+=1
+            pbatch=self._prepare_batch(si, batch)
+            predn=self._prepare_pred(pred)
+        
+            cls=pbatch['cls'].cpu().numpy()
+            no_pred=predn['cls'].shape[0]==0
+            # pass numpy array inputs
+            self.metrics.update_stats({**self._process_batch(predn, pbatch), # tp:(M,10) where 10 is the number of IoU thresholds
+                                       "target_cls":cls, # (N,)
+                                       "target_img":np.unique(cls),
+                                       "conf":np.zeros(0) if no_pred else predn["conf"].cpu().numpy(), # (M,)
+                                       "pred_cls":np.zeros(0) if no_pred else predn["cls"].cpu().numpy(), # (M,)
+                                       })
+            # Evaluate
+            if self.args.plots:
+                self.confusion_matrix.process_batch(predn, pbatch, conf=self.args.conf)
+                if self.args.visualize:
+                    self.confusion_matrix.plot_matches(batch['img'][si], pbatch['im_file'], self.save_dir)
+            if no_pred: continue
+        
+            # Save
+            if self.args.save_json or self.args.save_txt:
+                predn_scaled=self.scale_preds(predn, pbatch)
+            if self.args.save_json:
+                self.pred_to_json(predn_scaled, pbatch)
+            if self.args.save_txt:
+                self.save_one_txt(predn_scaled, self.args.save_conf, pbatch['ori_shape'],
+                                  self.save_dir/'labels'/f"{Path(pbatch['im_file']).stem}.txt")
+
+    def plot_val_samples(self, batch:dict[str, Any], ni:int)->None:
+        """Plot validation image samples
+
+        Args:
+            batch (dict[str, Any]): Batch containing images and annotations
+            ni (int): Batch index
+        """
+        plot_images(labels=batch, paths=batch['im_file'], fname=self.save_dir/f'val_batch{ni}_labels.jpg', names=self.names)
+
+    def plot_predictions(self, batch:dict[str, Any], preds:list[dict[str, torch.Tensor]], ni:int, max_det:int|None=None)->None:
+        """Plot predicted bounding boxes on input images and save the results
+
+        Args:
+            batch (dict[str, Any]): Batch containing images and annotations, with keys including 'batch_idx', 'bboxes', 'cls', 'im_file', 'img', 
+                'keypoints', 'ori_shape', 'ratio_pad', 'resized_shape', etc.
+            preds (list[dict[str, torch.Tensor]]): List of predictions from the model, where the length of preds is the number of detections,
+                each dict is each detection containing keys: 
+                - 'bboxes' of size (N,4)
+                - 'conf' of size (N,)
+                - 'cls' of size (N,)
+                - [optionally]'keypoints' of size (N,17,3)
+                - [optionally] 'masks'
+            ni (int): Batch index
+            max_det (Optional[int]): Maximum number of detections to plot
+        """
+        # TODO: optimize this
+        for i, pred in enumerate(preds): pred['batch_idx']=torch.ones_like(pred['conf'])*i # add batch index to prediction
+        keys=preds[0].keys()
+        max_det=max_det or self.args.max_det
+        batched_preds={k:torch.cat([x[k][:max_det] for x in preds], dim=0) for k in keys} 
+        # TODO: fix this
+        batched_preds['bboxes'][:,:4]=xyxy2xywh(batched_preds['bboxes'][:,:4]) # convert xyxy to xywh format
+        plot_images(images=batch['img'], labels=batched_preds, paths=batch['im_file'], fname=self.save_dir/f'val_batch{ni}_pred.jpg',
+                    names=self.names)
+
+    def get_stats(self)->dict[str, Any]:
+        """Calculate and return matrics statistics
+        Returns:
+            (dict[str, Any]): Dict containing metrics results
+        """
+        self.metrics.process(save_dir=self.save_dir, plot=self.args.plots)
+        self.metrics.clear_stats() # if we clear_stats, print_results will not have stats to print, i.e., 
+        # if ... len(self.metrics.stats) will be False
+        return self.metrics.results_dict
+
+    def finalize_metrics(self)->None:
+        """Set final values for metrics speed and confusion matrix"""
+        if self.args.plots:
+            for normalize in True, False:
+                self.confusion_matrix.plot(save_dir=self.save_dir, normalize=normalize)
+        self.metrics.speed=None # we did not concern speed here
+        self.metrics.confusion_matrix=self.confusion_matrix
+        self.metrics.save_dir=self.save_dir
+
+    def print_results(self)->None:
+        """Print training/validation set metrics per class"""
+        
+        pf="%22s"+"%11i"*2+"%11.3g"*len(self.metrics.keys) # print format
+        print(pf%("all", self.seen, self.metrics.nt_per_class.sum(), *self.metrics.mean_results()))
+        if self.metrics.nt_per_class.sum()==0:
+            warnings.warn(f'no labels found in {self.args.task} set, cannot compute metrics without labels')
+            
+        # Print results per class. If there is only 1 class, "all" has already printed the outcome so we ignore 1 class case
+        if self.args.verbose and not self.training and self.nc>1: 
+            for i, c in enumerate(self.metrics.ap_class_index):
+                print(pf%(
+                    self.names[c], self.metrics.nt_per_image[c], self.metrics.nt_per_class[c],
+                    *self.metrics.class_result(i),
+                ))
+

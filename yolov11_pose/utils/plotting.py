@@ -13,8 +13,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from PIL import __version__ as pil_version
 
-from .utils import IS_COLAB, IS_KAGGLE, ops
 from .checks import is_ascii, check_version
+from computer_vision.yolov11_pose.utils import IS_COLAB, IS_KAGGLE, ops
 
 class Colors:
     """Ultralytics color palette for visualization and plotting.

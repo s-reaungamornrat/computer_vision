@@ -380,7 +380,7 @@ class DetMetrics:
         """
         for k in self.stats.keys(): self.stats[k].append(stat[k])
 
-    def process(self, save_dif:Path=Path('.'), plot:bool=False)->dict[str, np.ndarray]:
+    def process(self, save_dir:Path=Path('.'), plot:bool=False)->dict[str, np.ndarray]:
         """Process predicted results for object detection and update metrics
         Args:
             save_dir (Path): Directory to save plots. Default to Path(".")
@@ -709,18 +709,22 @@ class ConfusionMatrix:
 
         labels={k:torch.stack(v, 0) if len(v) else torch.empty(0) for k, v in labels.items()}
         (save_dir/"visualizations").mkdir(parents=True, exist_ok=True)
-        plot_images(labels, im.repeat(4,1,1,1), paths=['Ground Truth', 'False Positives', 'True Positive', 'False Negative'],
+        plot_images(labels, img.repeat(4,1,1,1), paths=['Ground Truth', 'False Positives', 'True Positive', 'False Negative'],
                     fname=save_dir/'visualizations'/Path(im_file).name, names=self.names, max_subplots=4, conf_thres=0.001)
 
-    def plot(self, normalize:bool=True, save_dir:str=""):
+    def plot(self, normalize:bool=True, save_dir:str="", on_plot=None):
         """Plot the confusion matrix using matplotlib and save it to a file
         Args:
             normalize (bool, optional): Whether to normalize the confusion matrix
             save_dir (str, optional): Directory where the plot will be saved
+            on_plot (callable, optional): An optional callback to pass plots path and data when they are rendered.
         """
         import matplotlib.pyplot as plt # scope for improved speed
 
         array=self.matrix/((self.matrix.sum(0).reshape(1,-1)+1e-9) if normalize else 1) # normalize column
+        array[array<0.005]=np.nan # do not annotate (would appear as 0.00)
+        
+        fig, ax = plt.subplots(1, 1, figsize=(12, 9))
         names, n=list(self.names.values()), self.nc
         if self.nc>=100: # downsample for large number of classes
             k=max(2, self.nc//60) # step size for downsampling, always > 1
@@ -751,7 +755,7 @@ class ConfusionMatrix:
         title='Confusion Matrix'+" Normalized"*normalize
         ax.set_xlabel('True', fontsize=label_fontsize, labelpad=10)
         ax.set_ylabel('Predicted', fontsize=label_fontsize, labelpad=10)
-        ax.set_title(title, fontsize=title_fontsize, labelpad=10)
+        ax.set_title(title, fontsize=title_fontsize, pad=20)
         ax.set_xticks(xy_ticks)
         ax.set_yticks(xy_ticks)
         ax.tick_params(axis='x', bottom=True, top=False, labelbottom=True, labeltop=False)

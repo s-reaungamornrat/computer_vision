@@ -8,6 +8,7 @@ import math
 import warnings
 import functools
 
+import re
 import cv2
 import numpy as np
 import torch
@@ -23,6 +24,19 @@ def is_ascii(s) -> bool:
     """
     return all(ord(c) < 128 for c in str(s))
 
+@functools.lru_cache
+def parse_version(version='0.0.0')->tuple:
+    """Convert a version string to a tuple of integers, ignoring any extra non-numeric strings attached to the version
+    Args:
+        version (str): Version string, i.e., '2.0.1+cpu'
+    Returns:
+        (tuple): Tuple of integers representing the numeric part of the version, i.e. (2,0,1)
+    """
+    try: return tuple(map(int, re.findall(r'\d+',version)[:3])) # '2.0.1+cpu'->(2,0,1)
+    except Exception as e:
+        warnings.warn(f'Failure for parse_version({version}), returning (0,0,0): {e}')
+        return 0,0,0
+        
 @functools.lru_cache
 def check_version(
     current: str = "0.0.0",

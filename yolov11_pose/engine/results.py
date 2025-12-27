@@ -10,7 +10,89 @@ import torch
 
 from computer_vision.yolov11_pose.utils import ops
 
-class Boxes:
+class BaseTensor:
+    """Base tensor class with additional methods for easy manipulation and device handling
+
+    This class provides a foundation for tensor-like objects with device management capabilities, supporting both PyTorch tensors and Numpy arrays.
+    It includes methods for moving data between devices and converting between tensor types.
+
+    Examples:
+        >>> data=torch.tensor([[1,2,3],[4,5,6]])
+        >>> orig_shape=(720,1280)
+        >>> base_tensor=BaseTensor(data, orig_shape)
+        >>> cpu_tensor=base_tensor.cpu()
+        >>> gpu_tensor=base_tensor.cuda()
+    """
+    def __init__(self, data:torch.Tensor|np.ndarray, orig_shape:tuple[int, int])->None:
+        """Initialize BaseTensor with prediction data and the original shape of the image
+        Args:
+            data (torch.Tensor|np.ndarray): Prediction data such as bounding boxes, masks, or keypoints
+            orig_shape (tuple[int, int]): Original shape of the image in (height, width) format
+        """
+        assert isinstance(data, (torch.Tensor, np.ndarray)), f'data must be torch.Tensor or np.ndarray, but got {type(data)}'
+        self.data=data
+        self.orig_shape=orig_shape
+
+    @property
+    def shape(self)->tuple[int,...]:
+        """Return the shape of the underlying data tensor
+        Returns:
+            (tuple[int,...]): The shape of the data tensor
+        """
+        return self.data.shape
+        
+    def cpu(self):
+        """Return a copy of the tensor stored in the CPU memory
+
+        Returns:
+            (BaseTensor): A new BaseTensor object with the data tensor moved to CPU memory
+        """
+        return self if isinstance(self.data, np.ndarray) else self.__class__(self.data.cpu(), self.orig_shape)
+
+    def numpy(self):
+        """Return a copy of this object with its data converted to a numpy array
+        Returns:
+            (BaseTensor): A new instance with `data` as a numpy array
+        """
+        return self if isinstance(self.data, np.ndarray) else self.__class__(self.data.numpy(), self.orig_shape)
+
+    def cuda(self):
+        """Move the tensor to GPU memory
+
+        Returns:
+            (BaseTensor): A new BaseTensor instance with data moved to GPU memory
+        """
+        return self.__class__(torch.as_tensor(self.data).cuda(), self.orig_shape)
+
+    def to(self, *args, **kwargs):
+        """Return a copy of the tensor with the specified device and dtype
+
+        Args:
+            *args (Any): Variable length argument list to be passed to torch.Tensor.to()
+            **kwargs (Any): Arbitrary keyword arguments to be passed to torch.Tensor.to()
+        Returns:
+            (BaseTensor): A new BaseTensor instance with the data moved to the specified device and/or dtype
+        """
+        return self.__class__(torch.as_tensor(self.data).to(*args, **kwargs), self.orig_shape)
+
+    def __len__(self)->int:
+        """Return the length of the underlying data tensor
+
+        Returns:
+            (int): The number of elements in the first dimension of the data tensor
+        """
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        """Return a new BaseTensor instance containing the specified indexed elements of the data tensor
+        Args:
+            idx (int|list[int]|torch.Tensor): Index or indices to select from the data tensor
+        Returns:
+            (BaseTensor): A new BaseTensor instance containing the indexed data
+        """
+        return self.__class__(self.data[idx], self.orig_shape)
+        
+class Boxes(BaseTensor):
     """
     A class for managing and manipulating detection boxes
     This class provides comprehensive functionality for handling detection boxes, including their coordinates, confidence scores,
@@ -35,14 +117,15 @@ class Boxes:
                 Columns should contain [x1,y1,x2,y2,(optional) track_id, confidence, class]
             orig_shape (tuple[int, int]): The original image shape as (height, width). Used for normalization
         """
-        assert isinstance(boxes, (torch.Tensor, np.ndarray)), f'boxes must be torch.Tensor or np.ndarray, but got {type(boxes)}'
+        #assert isinstance(boxes, (torch.Tensor, np.ndarray)), f'boxes must be torch.Tensor or np.ndarray, but got {type(boxes)}'
         if boxes.ndim==1: 
             boxes=boxes[None,:]
         n=boxes.shape[-1]
         assert n in {6,7}, f"expect 6 or 7 dimensions but got {n}" # xyxy, track-id, conf, cls
         self.is_track=n==7
-        self.data=boxes
-        self.orig_shape=orig_shape
+        super().__init__(boxes, orig_shape)
+        # self.data=boxes
+        # self.orig_shape=orig_shape
         
     @property
     def xyxy(self)->torch.Tensor|np.ndarray:
@@ -122,7 +205,7 @@ class Boxes:
         xywh[...,[1,3]]/=self.orig_shape[0]
         return xywh
 
-class Keypoints:
+class Keypoints(BaseTensor):
     """A class for storing and manipulating detection keypoints
 
     This class encapsulates functionality for handling keypoint data, including coordinate manipulation, normalization, and confidence
@@ -147,10 +230,11 @@ class Keypoints:
                 - (num_objects, num_keypoints, 3) for x, y coordinates and confidence scores
             orig_shape (tuple[int, int]): The original image dimension (height, width)
         """ 
-        assert isinstance(keypoints,(torch.Tensor, np.ndarray)),f'keypoints must be torch.Tensor or np.ndarray,but got {type(keypoints)}'
-        self.data=keypoints
-        self.orig_shape=orig_shape
+        # assert isinstance(keypoints,(torch.Tensor, np.ndarray)),f'keypoints must be torch.Tensor or np.ndarray,but got {type(keypoints)}'
+        # self.data=keypoints
+        # self.orig_shape=orig_shape
         if keypoints.ndim==2: keypoints=keypoints[None,:]
+        super().__init__(keypoints, orig_shape)
         self.has_visible=self.data.shape[-1]==3
 
     @property
@@ -180,6 +264,8 @@ class Keypoints:
         xy=self.xy.clone() if isinstance(self.xy, torch.Tensor) else np.copy(self.xy)
         xy[...,0]/=self.orig_shape[1]
         xy[...,1]/=self.orig_shape[0]
+
+        return xy
 
     @property
     @lru_cache(maxsize=1)
@@ -230,6 +316,7 @@ class Results:
 
         self.boxes=Boxes(boxes, self.orig_shape) if boxes is not None else None # native size
         self.masks=Masks(masks, self.orig_shape) if masks is not None else None # native size of imgsz size
+        self.probs=Probs(probs) if probs is not None else None
         self.keypoints=Keypoints(keypoints, self.orig_shape) if keypoints is not None else None
         self.obb=OBB(obb, self.orig_shape) if obb is not None else None
         self.speed=speed if speed is not None else {'preprocess':None, 'inference':None, 'postprocess':None}
@@ -377,7 +464,7 @@ class Results:
 
         return str(txt_file)  
 
-class OBB:
+class OBB(BaseTensor):
     """A class for storing and manipulating Oriented Bounding Boxes (OBB)
 
     This class provides functionality to handle oriented bounding boxes, including conversion between different formats, normalization, and 
@@ -404,9 +491,11 @@ class OBB:
         if boxes.ndim==1: boxes=boxes[None,:]
         n=boxes.shape[-1]
         assert n in {7,8}, f'expected 7 or 8 values but got {n}' # xywh, rotation, track_id, conf, cls
+        super().__init__(boxes, orig_shape)
         self.is_track=n==8
-        self.orig_shape=orig_shape
-        self.data=boxes
+        # self.orig_shape=orig_shape
+        # assert isinstance(boxes, (torch.Tensor, np.ndarray)), "boxes must be torch.Tensor or np.ndarray"
+        # self.data=boxes
 
     @property
     def xywhr(self)->torch.Tensor | np.ndarray:
@@ -505,7 +594,7 @@ class OBB:
                else np.stack([x.min(1), y.min(1), x.max(1), y.max(1)],-1)
                )
         
-class Masks:
+class Masks(BaseTensor):
     """A class for storing and manipulating detection masks
 
     This class provides functionality for handling segmentation masks, including methods for converting between pixel and normalized coordinates
@@ -524,8 +613,10 @@ class Masks:
             orig_shape (tuple[int,int]): The original image shape as (height, width). Used for normalization
         """
         if masks.ndim==2: masks==masks[None,:]
-        self.data=masks
-        self.orig_shape=orig_shape
+        super().__init__(masks, orig_shape)
+        # assert isinstance(masks, (torch.Tensor, np.ndarray)), "masks must be torch.Tensor or np.ndarray"
+        # self.data=masks
+        # self.orig_shape=orig_shape
 
     @property
     @lru_cache(maxsize=1)
@@ -543,3 +634,103 @@ class Masks:
             ops.scale_coords(self.data.shape[1:], x, self.orig_shape, normalize=True)
             for x in ops.masks2segments(self.data)
         ]
+        
+    @property
+    @lru_cache(maxsize=1)
+    def xy(self)->list[np.ndarray]:
+        """Return the [x, y] pixel coordinates for each segment in the mask tensor
+
+        This property calculates and returns a list of pixel coordinates for each segmentation mask in the Masks object. The coordinates are scaled
+        to match the original image dimensions.
+
+        Returns:
+            (list[np.ndarray]): A list of numpy arrays, where each array contains the [x,y] pixel coordinates for a single segmentation mask. Each 
+                array has shape (N,2) where N is the number of points in the segment
+        """
+        return [
+            ops.scale_coords(self.data.shape[1:], x, self.orig_shape, normalize=False)
+            for x in ops.masks2segments(self.data)
+        ]
+
+class Probs(BaseTensor):
+    """A class for storing and manipulating classification probabilities
+
+    This class provides methods for accessing and manipulating classification probabilities
+
+    Examples:
+        >>> probs=torch.tensor([0.1, 0.3, 0.6])
+        >>> p=Probs(probs)
+        >>> print(p.top1)
+        2
+        >>> print(p.top5)
+        [2,1,0]
+    """
+    def __init__(self, probs: torch.Tensor|np.ndarray, orig_shape:tuple[int, int]|None=None)->None:
+        """Initialize the Probs class with classification probabilities
+
+        This class stores and manages classification probabilities, providing easy access to top predictions and their confidences
+
+        Args:
+            probs (torch.Tensor|np.ndarray): A 1D tensor or array of classification probabilities. 
+            orig_shape (tuple[int, int]|None): The original image shape as (height, width). Not used in this class but kept for consistency with
+                other result classes
+        """
+        super().__init__(probs, orig_shape)
+        # assert isinstance(probs, (torch.Tensor, np.ndarray)), "probs must be torch.Tensor or np.ndarray"
+        # self.data=probs
+        # self.orig_shape=orig_shape
+
+    @property
+    @lru_cache(maxsize=1)
+    def top1(self)->int:
+        """Return the index of the class with the highest probability
+
+        Returns:
+            (int): Index of the class with the highest probability
+        Examples:
+            >>> probs=Probs(torch.tensor([0.1, 0.3, 0.6]))
+            >>> probs.top1
+            2
+        """
+        return int(self.data.argmax())
+        
+    @property
+    @lru_cache(maxsize=1)
+    def top5(self)->list[int]:
+        """Return the indices of the top 5 class probabilities
+
+        Returns:
+            (list[int]): A list containing the indices of the top 5 class probabilities, sorted in descending order
+        Examples:
+            >>> probs=Probs(torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5]))
+            >>> print(probs.top5)
+            [4,3,2,1,0]
+        """
+        return (-self.data).argsort(0)[:5].tolist() # this way works with both torch and numpy
+        
+    @property
+    @lru_cache(maxsize=1)
+    def top1conf(self)->torch.Tensor|np.ndarray:
+        """Return the confidence score of the highest probability class
+
+        This property retrieves the confidence score (probability) of the class with the highest predicted probability from the classification
+        results
+
+        Returns:
+            (torch.Tensor|np.ndarray): A tensor containing the confidence score of the top 1 class
+        """
+        return self.data[self.top1]
+
+    @property
+    @lru_cache(maxsize=1)
+    def top5conf(self)->torch.Tensor|np.ndarray:
+        """Return confidence scores for the top 5 classification predictions
+
+        This property retrieves the confidence scores corresponding to the top 5 class probabilities predicted by the model. It provides a quick way
+        to access the most likely class predictions along with their associated confidence levels,
+
+        Returns:
+            (torch.Tensor|np.ndarray): A tensor or array containing the confidence scores for teh top 5 predicted classes, sorted in descending 
+                order of probability
+        """
+        return self.data[self.top5]
