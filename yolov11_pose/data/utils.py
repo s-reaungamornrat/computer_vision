@@ -235,6 +235,7 @@ def check_det_dataset(dataset:str)->dict[str, Any]:
     Returns:
         (dict[str, Any]): Parsed dataset information and paths
     """
+    print(f'In data.utils.check_det_dataset type(dataset) {type(dataset)} ')
     if isinstance(dataset, str): dataset=Path(dataset)
     if isinstance(dataset, Path):
         assert dataset.is_file(), f'{dataset} does not exist'

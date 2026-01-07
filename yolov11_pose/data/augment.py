@@ -559,6 +559,7 @@ class LetterBox:
         img=labels.get('img') if image is None else image
         shape=img.shape[:2] # current shape (height, width)
         new_shape=labels.pop('rect_shape', self.new_shape)
+        print(f'data.augment.LetterBox.__call__ new_shape {new_shape}')
         if isinstance(new_shape, int): new_shape=(new_shape, new_shape)
 
         # Scale ratio (new/old)
@@ -604,7 +605,9 @@ class LetterBox:
             labels=self._update_labels(labels, ratio, left, top)
             labels['img']=img
             labels['resized_shape']=new_shape
+            print(f'data.augment.LetterBox.__call__ img {img.shape}')
             return labels
+        print(f'data.augment.LetterBox.__call__ img {img.shape}')
         return img
 
 

@@ -349,3 +349,79 @@ class DectectionValidator:
                     *self.metrics.class_result(i),
                 ))
 
+
+    def __call__(self, trainer=None, model=None):
+        """Execute validation process, running inference on dataloader, and computing performance metrics
+        Args:
+            trainer (object, optional): Trainer object that contains the model to validate
+            model (nn.Module, optional): Model to validate if not using a trainer
+        Returns:
+            (dict): Dict containing validation statistics
+        """
+        self.training=trainer is not None
+        augment=self.args.augment and (not self.training)
+        
+        if self.training:
+            self.device=trainer.device
+            self.data=trainer.data
+            model=trainer.model # or trainer.ema.ema
+            if trainer.args.compile and hasattr(model, '_orig_mod'): model=model._orig_mod # validate non-compiled original model to avoid issues
+            self.loss=torch.zeros_like(trainer.loss_items, device=trainer.device)
+            self.args.plots &= trainer.stopper.possible_stop or (trainer.epoch==trainer.epochs-1)
+            model.eval()
+        else:
+            assert model is not None, f'Please provide model'
+            assert self.dataloader is not None, f'Please provide dataloader when initialize validator'
+            self.device=list(model.parameters())[0].device
+            stride=model.stride
+            imgsz=check_imgsz(self.args.imgsz, stride=stride)
+            if str(self.args.data).rsplit('.', 1)[-1] in {'yaml', 'yml'}:
+                self.data=check_det_dataset(self.args.data)
+            # elif validator.args.task=='classify':
+            #     validator.data=check_cls_dataset(validator.args.data, split=validator.args.split)
+            else:raise FileNotFoundError(f'Dataset {self.args.data} for task={self.args.task} is not found')
+        
+            if self.device.type in {'cpu', 'mps'}: self.args.workers=0 # faster CPU val as time dominated by inference, not dataloading
+            self.stride=model.stride # used in get_dataloader() for padding
+            model.eval()
+        self.init_metrics(unwrap_model(model))
+        self.jdict=[] # empty before each val
+        
+        for batch_i, batch in enumerate(self.dataloader):
+            self.batch_i=batch_i
+        
+            # Preprocessing
+            batch=self.preprocess(batch)
+        
+            with torch.no_grad():
+                # Inference
+                preds=model(batch['img'], augment=augment)
+            
+                # Loss
+                if self.training: self.loss+=model.loss(batch, preds)[1]
+        
+            # Postprocess
+            preds=self.postprocess(preds)
+        
+            self.update_metrics(preds, batch)
+            if self.args.plots and batch_i<3:
+                self.plot_val_samples(batch, batch_i)
+                self.plot_predictions(batch, preds, batch_i)
+        
+        stats=self.get_stats()
+        self.finalize_metrics()
+        self.print_results()
+        
+        if self.training:
+            model.float()
+            loss=self.loss.clone().detach()
+            results={**stats, **trainer.label_loss_items(loss.cpu()/len(self.dataloader), prefix='val')}
+            return {k:round(float(v), 5) for k, v in results.items()} # return results as 5 decimal place floating points
+        else:
+            if self.args.save_json and self.jdict:
+                with open(str(self.save_dir/"predictions.json"), 'w', encoding='utf-8') as f:
+                    print(f'Saving {f.name}...')
+                    json.dump(self.jdict, f) # flatten and save
+            if self.args.plots or self.args.save_json:
+                print(f'Results saved to {self.save_dir}')
+            return stats

@@ -83,7 +83,7 @@ class YOLODataset(Dataset):
         if self.rect:
             assert self.batch_size is not None
             self.set_rectangle()
-
+        print(f'In data.dataset.YOLODataset.__init__ augment {augment} rect {rect}')
         # Buffer thread for mosaic images
         self.buffer=[] # buffer size = batch size 
         self.max_buffer_length=min(self.ni, self.batch_size*8, 1000) if self.augment else 0
@@ -242,6 +242,7 @@ class YOLODataset(Dataset):
         """Set the shape of bounding boxes for YOLO detections as rectangles."""
         bi=np.floor(np.arange(self.ni)/self.batch_size).astype(int) # batch index
         nb=bi[-1]+1 # number of batches
+        print(f'In data.dataset.YOLODataset.set_rectangle bi {bi} nb {nb}')
         
         # Nx2 where N is the number of images and 2 for (height, width)
         s=np.array([x.pop('shape') for x in self.labels]) 

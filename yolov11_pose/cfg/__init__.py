@@ -17,7 +17,7 @@ def cfg2dict(cfg: str | Path | dict | SimpleNamespace | Namespace)->dict:
         (dict): Configuration object in a dict format
     """
     if isinstance(cfg, (str, Path)): 
-        with open(DEFAULT_CFG_PATH) as f: cfg=yaml.load(f, Loader=yaml.SafeLoader)
+        with open(cfg) as f: cfg=yaml.load(f, Loader=yaml.SafeLoader)
     elif isinstance(cfg, (SimpleNamespace,Namespace)): cfg=vars(cfg)
     return cfg
 

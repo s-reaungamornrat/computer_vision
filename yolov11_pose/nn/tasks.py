@@ -14,6 +14,7 @@ import torch.nn as nn
 from computer_vision.yolov11_pose.utils.ops import make_divisible
 from computer_vision.yolov11_pose.nn.modules import Conv, DWConv, C3k2, SPPF, C2PSA, Concat, Pose, Detect
 from computer_vision.yolov11_pose.utils.torch_utils import initialize_weights, model_info, intersect_dicts, fuse_conv_and_bn
+from computer_vision.yolov11_pose.utils import IterableSimpleNamespace
 
 class DetectionModel(nn.Module):
     """
@@ -218,10 +219,15 @@ class PoseModel(DetectionModel):
             data_kpt_shape (tuple[int,int]): Shape of keypoint data
             verbose (bool,optional): Whether to display model information
         """
-        if not isinstance(cfg, dict): cfg=yaml_model_load(cfg)
-        if any(data_kpt_shape) and list(data_kpt_shape)!=list(cfg["kpt_shape"]):
-            print(f'Override model.yaml kpt_shape={kpt_shape["kpt_shape"]} with kpt_shape={data_kpt_shape}')
-            cfg["kpt_shape"]=data_kpt_shape
+        print(f'In nn.tasks.PoseModel.__init__ type(cfg) {type(cfg)}, cfg {cfg}' )
+        if isinstance(cfg, IterableSimpleNamespace): cfg=vars(cfg)
+        elif isinstance(cfg, (str, Path)): cfg=yaml_model_load(cfg)
+        assert isinstance(cfg, dict), f'cfg must be dict, but got {type(cfg)}'
+        if any(data_kpt_shape):
+            if isinstance(cfg, IterableSimpleNamespace) and not hasattr(cfg, 'kpt_shape'): cfg.kpt_shape=data_kpt_shape
+            elif isinstance(cfg, dict) and ('kpt_shape' not in cfg or list(data_kpt_shape)!=list(cfg["kpt_shape"])):
+                print(f'Override model.yaml kpt_shape={cfg["kpt_shape"] if "kpt_shape" in cfg else " "} with kpt_shape={data_kpt_shape}')
+                cfg["kpt_shape"]=data_kpt_shape
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
 
     def init_criterion(self):
@@ -240,10 +246,10 @@ def yaml_model_load(path):
         (dict): Model dict
     """
     if isinstance(path, str): path=Path(path)
+    assert isinstance(path, Path), f'{path} must be path to yaml'
     if isinstance(path, Path):
         assert path.is_file(), f'{path} does not exist'
         with open(path) as f: config=yaml.load(f, Loader=yaml.SafeLoader)
-
     # guess model scale
     try: config['scale']=re.search(r"yolo(e-)?[v]?\d+([nslmx])", path.stem).group(2)
     except AttributeError: config['scale']=''
@@ -277,7 +283,7 @@ def parse_model(d, ch, verbose=True):
         save (list): Sorted list of output layers
     """
     import ast
-    
+    print(f'In nn.tasks.parse_model d {d}')
     legacy=True # backward compatibility for v3-v9
     max_channels=float('inf')
     nc, act, scales=(d.get(x) for x in ('nc','activation', 'scales'))
@@ -314,6 +320,7 @@ def parse_model(d, ch, verbose=True):
                 args.insert(2,n) # number of repeats
                 n=1
             if m is C3k2: 
+                print(f'In nn.tasks.parse_model m is C3k2 scale {scale}')
                 legacy=False
                 if scale in 'mlx': args[3]=True
         elif m is torch.nn.BatchNorm2d: args=[ch[f]]
@@ -334,3 +341,15 @@ def parse_model(d, ch, verbose=True):
         ch.append(c2)
         
     return torch.nn.Sequential(*layers), sorted(save)
+
+def load_checkpoint(weight):
+    """Load a single model weights
+
+    Args:
+        weight (str|Path): Model weight path
+    Returns:
+        ckpt (dict): Model checkpoint dict
+    """
+    ckpt=torch.load(weight, map_location="cpu", weights_only=False)
+
+    return ckpt

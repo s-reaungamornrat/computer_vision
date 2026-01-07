@@ -3,8 +3,41 @@ from __future__ import annotations
 from typing import Any
 from pathlib import Path
 
+import os
+import random
+import warnings
+
+import numpy as np
+
 import torch
 import torch.nn as nn
+
+def init_seeds(seed=0, deterministic=False):
+    """Initialize random number generator (RNG) seeds https://pytorch.org/docs/stable/notes/randomness.html
+
+    Args:
+        seed (int, optional): Random seed
+        deterministic (bool, optional): Whether to set deterministic algorithm
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) # for multi-gpu, exception safe
+    # torch.backends.cudnn.benchmark = True  # AutoBatch problem https://github.com/ultralytics/yolov5/issues/9287
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True) # warn if deterministic is not possible
+        torch.backends.cudnn.deterministic=True
+        os.environ['CUBLAS_WORKSPACE_CONFIG']=":4096:8"
+        os.environ['PYTHONHASHSEED']=str(seed)
+    else: unset_deterministic()
+
+def unset_deterministic():
+    """Unset all the configurations applied for deterministic training"""
+    torch.use_deterministic_algorithms(False)
+    torch.backends.cudnn.deterministic=False
+    os.environ.pop('CUBLAS_WORKSPACE_CONFIG', None)
+    os.environ.pop('PYTHONHASHSEED', None)
 
 def unwrap_model(m:nn.Module)->nn.Module:
     """Unwrap compliled and parallel models to get the base model

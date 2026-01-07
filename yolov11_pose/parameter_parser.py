@@ -1,10 +1,16 @@
 import argparse
 
 parser=argparse.ArgumentParser()
+parser.add_argument('--model-cfg', type=str, default='../yolo11-pose.yaml', help='path to model configuration')
 parser.add_argument('--save-dir', type=str, default=None, help='path to save prediction')
+parser.add_argument('--checkpoint-dir', type=str, default=None, help='path to save checkpoint')
+parser.add_argument('--train_image-dir', type=str, default=None, help='path to training image directory, e.g., images/train2017')
+parser.add_argument('--val_image-dir', type=str, default=None, help='path to validation image directory, e.g., images/val2017')
 parser.add_argument('--imgsz', type=int, default=640, help='input image size')
 parser.add_argument('--batch-size', type=int, default=16, help='batch size')
 parser.add_argument('--deterministic', action='store_true', help='whether to use deterministic training')
 parser.add_argument('--data', type=str, default='coco8-pose.yaml', help='data configuration file')
 parser.add_argument('--visualize', action='store_true', help='whether to visualize model features (predict) or TP/FP/FN confusion (val)')
+parser.add_argument('--resume', action='store_true', help='whether to resume training')
+parser.add_argument('--device', type=str, default='cuda', choices=['cpu','cuda'],help='computing device')
 # args=parser.parse_args(argument.split())

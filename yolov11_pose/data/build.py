@@ -34,11 +34,12 @@ def build_yolo_dataset(args:Namespace, cfg:IterableSimpleNamespace, task:str, im
     Returns:
         (torch.utils.data.Dataset): Dataset
     """
+    print(f'In data.build.build_yolo_dataset batch {batch}')
     assert task in ['pose','detect','segment'],f'task must be "pose", "detect", or "segment" but got {task}'
     assert mode in ['train', 'val'], f'mode must be "train" or "val", but got {mode}'
     return YOLODataset(args=args, data=data, task=task, img_path=img_path, imgsz=cfg.imgsz, 
                        cache=cfg.cache or None, augment=mode=='train', hyp=cfg, prefix='',
-                       rect=cfg.rect or rect, batch_size=args.batch_size or hyp.batch, stride=stride,
+                       rect=cfg.rect or rect, batch_size=batch, stride=stride,
                        pad=0. if mode=='train' else 0.5, single_cls=cfg.single_cls, classes=cfg.classes,
                        fraction=cfg.fraction if mode=='train' else 1.,channels=channels)
 
@@ -55,6 +56,7 @@ def build_dataloader(dataset, batch:int, workers:int, shuffle:bool=True, drop_la
     Returns:
         (torch.utils.data.DataLoader): A dataloader that can be used for training and validation
     """
+    print(f'In data.build.build_dataloader batch {batch}')
     batch=min(batch, len(dataset))
     nd=torch.cuda.device_count() # number of CUDA devices
     nw=min(os.cpu_count()//max(nd, 1), workers) # number of workers
