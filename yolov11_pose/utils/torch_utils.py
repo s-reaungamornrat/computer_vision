@@ -215,3 +215,50 @@ def fuse_conv_and_bn(conv, bn):
         conv.bias.data = fused_bias
 
     return conv.requires_grad_(False)
+
+def one_cycle(y1=0., y2=1., steps=100):
+    """Return a lambda function for sinusoidal ramp from y1 to y2 https://arxiv.org/pdf/1812.01187.pdf
+    Args:
+        y1 (float, optional): Initial value
+        y2 (float, optional): Final value
+        steps (int, optional): Number of steps
+    Returns:
+        (function): Lambda function for computing the sinusoidal ramp
+    """
+    return lambda x: max((1-math.cos(x*math.pi/steps))/2, 0)*(y2-y1)+y1
+
+class EarlyStopping:
+    """Early stopping class that stops training when a specified number of epochs have passed without improvement"""
+    def __init__(self, patience=50):
+        """Initialize early stopping object
+        Args:
+            patience (int, optional): Number of epochs to wait after fitness stops improving before stopping
+        """
+        self.best_fitness=0. # i.e. mAP
+        self.best_epoch=0
+        self.patience=patience or float('inf') # epochs to wait after fitness stops improving to stop
+        self.possible_stop=False # possible stop may occur next epoch
+        
+    def __call__(self, epoch, fitness):
+        """Check whether to stop training
+        Args:
+            epoch (int): Current epoch of training
+            fitness (float): Fitness value of current epoch
+        Returns:
+            (bool): True if training should stop, False otherwise
+        """
+        if fitness is None: # check if fitness=None (happens when val=False)
+            return False
+        if fitness > self.best_fitness or self.best_fitness==0: # allow for early zero-fitness stage of training
+            self.best_epoch=epoch
+            self.best_fitness=fitness
+        delta=epoch-self.best_epoch # epochs without improvement
+        self.possible_stop=delta>=(self.patience-1) # possible stop may occur next epoch
+        stop=delta>=self.patience # stop training if patience exceeded
+        if stop:
+            print(f"EarlyStopping:Training stopped early as no improvement observed in last {self.patience} epochs."
+                  f"Best results observed at epoch {self.best_epoch}, best model saved as best.pt.\n"
+                  f"To update EarlyStopping(patience={self.patience}) pass a new patience value,"
+                  f"i.e., `patience=300` or use `patience=0` to disable EarlyStopping."
+            )
+        return stop

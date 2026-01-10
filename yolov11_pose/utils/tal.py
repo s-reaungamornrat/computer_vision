@@ -1,4 +1,25 @@
+from __future__ import annotations
+
+from typing import Any
+
 import torch
+import torch.nn as nn
+
+class TaskAlignedAssigner(nn.Module):
+    """A task-aligned assigner for object detection
+    
+    This class assigns ground-truth (gt) objects to anchors based on the task-aligned metric, which combines both classification and localization 
+    information
+    """
+    def __init__(self, topk:int=13, num_classes:int=80, alpha:float=1., beta:float=6., eps:float=1e-9):
+        super().__init__()
+        self.topk=topk # the number of top candidates to consider
+        self.num_classes=num_classes # the number of object classes
+        self.alpha=alpha # alpha parameter for the classification component of the task-aligned metric
+        self.beta=beta # beta parameter for the localization component of the task-aligned metric
+        self.eps=eps # A small value preventing division by zero
+        
+        
 
 def make_anchors(feats, strides, grid_cell_offset=0.5):
     """Generate anchors from features."""

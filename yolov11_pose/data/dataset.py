@@ -439,11 +439,11 @@ class YOLODataset(Dataset):
         if self.rect: label['rect_shape']=self.batch_shapes[self.batch[index]]
         return self.update_labels_info(label)
 
-    def build_transforms(self, hyp:dict|None=None)->Compose:
+    def build_transforms(self, hyp:IterableSimpleNamespace|Namespace|None=None)->Compose:
         """Build and append transforms to the list
 
         Args:
-            hyp (dict, optional): Hyperparameters for transforms.
+            hyp (IterableSimpleNamespace|Namespace, optional): Hyperparameters for transforms.
         Returns:
             (Compose): Composed transforms
         """
@@ -518,3 +518,14 @@ class YOLODataset(Dataset):
         new_batch['batch_idx']=torch.cat(new_batch['batch_idx'], 0) # Then we stack them to a 1D array
         # looking like tensor([0., 0., 1., 1., 1., 1., 1., 1., 1., 3., 3., 3., 4., 4., 4.])
         return new_batch
+
+    def close_mosaic(self, hyp:IterableSimpleNamespace|Namespace)->None:
+        """Disable mosaic, copy_paste, mixup, and cutmix augmentations by setting their probabilities to 0.
+        Args:
+            hyp (IterableSimpleNamespace|Namespace): Hyperparameters for transformations
+        """
+        hyp.mosaic=0.
+        hyp.copy_paste=0.
+        hyp.mixup=0.
+        hyp.cutmix=0.
+        self.transforms=self.build_transforms(hyp)

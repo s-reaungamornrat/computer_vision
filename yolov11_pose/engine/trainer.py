@@ -4,6 +4,7 @@ import gc
 import math
 import os
 import yaml
+import time
 import warnings
 from copy import copy, deepcopy
 from pathlib import Path
@@ -15,12 +16,12 @@ from torch import nn, optim
 from computer_vision.yolov11_pose.utils import DEFAULT_CFG_DICT
 from computer_vision.yolov11_pose.cfg import get_cfg
 from computer_vision.yolov11_pose.utils.files import get_latest_run
-from computer_vision.yolov11_pose.utils.torch_utils import init_seeds, unwrap_model
+from computer_vision.yolov11_pose.utils.torch_utils import init_seeds, unwrap_model, one_cycle, EarlyStopping
 from computer_vision.yolov11_pose.data.utils import check_det_dataset
 from computer_vision.yolov11_pose.nn.tasks import load_checkpoint
 from computer_vision.yolov11_pose.utils.checks import check_imgsz
 from computer_vision.yolov11_pose.data.build import build_yolo_dataset, build_dataloader
-from computer_vision.yolov11_pose.utils.plotting import plot_labels
+from computer_vision.yolov11_pose.utils.plotting import plot_labels, plot_images
 
 class DetectionTrainer:
     """A base class for creating trainers
@@ -205,3 +206,283 @@ class DetectionTrainer:
         boxes=np.concatenate([lb['bboxes'] for lb in self.train_loader.dataset.labels], 0)
         cls=np.concatenate([lb['cls'] for lb in self.train_loader.dataset.labels], 0)
         plot_labels(boxes, cls.squeeze(), names=self.data['names'], save_dir=self.save_dir)
+
+    def build_optimizer(self, model, name='auto', lr=0.001, momentum=0.9, decay=1e-5, iterations=1e5):
+        """Construct an optimizer for the given model.
+        Args:
+            model (torch.nn.Module): The model for which to build an optimizer
+            name (str, optional): The name of the optimizer to use. If 'auto', the optimizer is selected based on the number of iterations
+            lr (float, optional): The learning rate for the optimizer
+            momentum (float, optional): The momentum factor for the optimizer
+            decay (float, optional): The weight decay for the optimizer
+            iterations (float, optional): The number of iterations, which determines the optimizer if name is 'auto'
+        Returns:
+            (torch.optim.Optimizer): The constructed optimizer
+        """
+        g=[],[],[] # optimizer parameter groups
+        bn=tuple(v for k, v in nn.__dict__.items() if 'Norm' in k) # normalization layers, i.e., BatchNorm2d()
+        if name=='auto':
+            print(f"'optimizer=auto' found, "
+                  f"ignoring 'lr0={self.args.lr0}' and 'momentum={self.args.momentum}' and "
+                  f"determining best 'optimizer', 'lr0', and 'momentum' automatically....")
+            nc=self.data.get('nc', 10) # number of classes
+            # The following line is a safety mechanism. It acts as a "smart default" that prevents the optimizer from taking steps that are 
+            # too aggressive when dealing with a high number of object categories, i.e., higher number of classes lower learning rate
+            lr_fit=round(0.002*5/(4+nc), 6) # lr0 fit equation to 6 decimal places
+            name, lr, momentum=('SGD', 0.01, 0.9) if iterations>10000 else ('AdamW', lr_fit, 0.9)
+            self.args.warmup_bias_lr=0. # no higher than 0.01 for Adam
+        
+        for module_name, module in model.named_modules():
+            for param_name, param in module.named_parameters(recurse=False):
+                full_name=f'{module_name}.{param_name}' if module_name else param_name
+                if 'bias' in full_name: # bias (no decay)
+                    g[2].append(param)
+                elif isinstance(module, bn) or 'logit_scale' in full_name: # weight (no decay)
+                    # logit_scale is a specialized parameter typically found in multimodal models (like CLIP)
+                    # or modern Vision Transformers that use cosine similarity attention
+                    # ContrastiveHead and BNContrastiveHead included here with 'logit_scale'
+                    g[1].append(param)
+                else: # weight (with decay)
+                    g[0].append(param)
+        optimizers={'Adam', 'Adamax','AdamW', 'NAdam', 'RAdam', 'RMSProp', 'SGD', 'auto'}
+        name={x.lower():x for x in optimizers}.get(name.lower())
+        if name in {'Adam', 'Adamax', 'AdamW', 'NAdam', 'RAdam'}:
+            optimizer=getattr(optim, name, optim.Adam)(g[2], lr=lr, betas=(momentum, 0.999), weight_decay=0.)
+        elif name=='RMSProp':
+            optimizer=optim.RMSprop(g[2], lr=lr, momentum=momentum)
+        elif name=='SGD':
+            optimizer=optim.SGD(g[2], lr=lr, momentum=momentum, nesterov=True)
+        else:
+            raise NotImplementedError(f"Optimizer '{name}' not found in list of available optimizers {optimizers}.")
+        optimizer.add_param_group({'params':g[0], 'weight_decay':decay}) # add g0 with weight_decay
+        optimizer.add_param_group({'params':g[1], 'weight_decay':0.}) # add g1 (BatchNorm2d weights)
+        print(f"'optimizer:' {type(optimizer).__name__}(lr={lr}, momentum={momentum}) with parameter groups"
+              f"{len(g[1])} weight(decay=0.), {len(g[0])} weight(decay={decay}), {len(g[2])} bias(decay=0.)")
+        return optimizer
+
+    def _setup_scheduler(self):
+        """Initialize training learning rate scheduler"""
+        if self.args.cos_lr: self.lf=one_cycle(1, self.args.lrf, self.epochs) # cosine 1->hyp['lrf']
+        else: self.lf=lambda x:max(1-x/self.epochs, 0)*(1.-self.args.lrf)+self.args.lrf # linear
+        self.scheduler=optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=self.lf)
+            
+
+    def _load_checkpoint_state(self, ckpt):
+        """Load optimizer, scaler, and best_fitness from checkpoint"""
+        if ckpt.get('optimizer') is not None: self.optimizer.load_state_dict(ckpt['optimizer'])
+        if ckpt.get('scaler') is not None: self.scaler.load_state_dict(ckpt['scaler'])
+        self.best_fitness=ckpt.get('best_fitness', 0)
+
+    def _close_dataloader_mosaic(self):
+        """Update dataloaders to stop using mosaic augmentation"""
+        if hasattr(self.train_loader.dataset, 'mosaic'): self.train_loader.dataset.mosaic=False
+        if hasattr(self.train_loader_dataset, 'close_mosaic'): 
+            print('In engine.trainer.DetectionTrainer._close_dataloader_mosaic: closing dataloader mosaic')
+            self.train_loader.dataset.close_mosaic(hyp=deepcopy(self.args))
+
+    def resume_training(self, ckpt):
+        """Resume YOLO training from given epoch and best fitness."""
+        if ckpt is None or not trainer.resume: return
+        start_epoch=ckpt.get('epoch', -1)+1
+        assert start_epoch>0, (
+            f"ckpt {ckpt.keys()} does not contains 'epoch', must mean training complete and the model was save without epoch.\n"
+            f"Start a new training without resuming, i.e., 'yolo train model={self.args.model}'"
+        )
+        print(f'Resuming training {self.args.model} from epoch {start_epoch} to {self.epochs} total epochs')
+        if self.epochs < start_epoch:
+            print(f"{self.model} has been trained for {ckpt['epoch']} epochs. Fine-tuning for {self.epochs} more epochs")
+            trainer.epochs+=ckpt['epoch'] # finetune additional epochs
+        self._load_checkpoint_state(ckpt)
+        self.start_epoch=start_epoch
+        if start_epoch>(self.epochs-self.args.close_mosaic): self._close_dataloader_mosaic()
+    
+    def _setup_train(self):
+        """Build dataloader and optimizer"""
+        ckpt=self.setup_model()
+        self.model=self.model.to(self.device)
+        self.set_model_attributes()
+        
+        # Freeze layers
+        freeze_list=(self.args.freeze if isinstance(self.args.freeze, list)
+                     else range(self.args.freeze)
+                     if isinstance(self.args.freeze, int)
+                     else [])
+        always_freeze_names=['.dfl'] # always freeze these layers
+        freeze_layer_names=[f'model.{x}.' for x in freeze_list]+always_freeze_names
+        self.freeze_layer_names=freeze_layer_names
+    
+        for k, v in self.model.named_parameters():
+            if any(x in k for x in freeze_layer_names):
+                warnings.warn(f"Freezing layer '{k}'")
+                v.requires_grad=False
+            elif not v.requires_grad and v.dtype.is_floating_point: # only floating point tensor can require gradients
+                warnings.warn(f"setting 'requires_grad=True' for frozen layer '{k}'")
+                v.requires_grad=True
+        
+        # Check imgsz
+        gs=max(int(self.model.stride.max() if hasattr(self.model, 'stride') else 32), 32) # grid size (max stride)
+        self.args.imgsz=check_imgsz(self.args.imgsz, stride=gs, max_dim=1, floor=gs)
+        self.stride=gs # for multiscale training
+        
+        # Dataloader 
+        batch_size=self.batch_size//max(self.world_size, 1)
+        self.train_loader=self.get_dataloader(self.data["train"], batch_size=batch_size, mode="train")
+        # Note: When training DOTA dataset, double batch size could get OOM on images with >2000 objects
+        self.test_loader=self.get_dataloader(self.data.get('val') or self.data.get('test'),
+                                             batch_size=batch_size if self.args.task=='obb' else batch_size*2, mode='val')
+        
+        self.validator=self.get_validator()
+        metric_keys=self.validator.metrics.keys+self.label_loss_items(prefix='val')
+        self.metrics=dict(zip(metric_keys, [0]*len(metric_keys)))
+        if self.args.plots: self.plot_training_labels()
+        
+        # Optimizer
+        self.accumulate=max(round(self.args.nbs/self.batch_size),1) # accumulate loss before optimizing
+        weight_decay=self.args.weight_decay*self.batch_size*self.accumulate/self.args.nbs # scale weight decay
+        iterations=math.ceil(len(self.train_loader.dataset)/max(self.batch_size, self.args.nbs))*self.epochs
+        self.optimizer=self.build_optimizer(model=self.model, name=self.args.optimizer, lr=self.args.lr0, 
+                                            momentum=self.args.momentum, decay=weight_decay, iterations=iterations)
+        
+        # Scheduler
+        self._setup_scheduler()
+        self.stopper, self.stop=EarlyStopping(patience=self.args.patience), False
+        self.resume_training(ckpt)
+        self.scheduler.last_epoch=self.start_epoch-1 # do not move
+
+    def _model_train(self):
+        """Set model in training mode"""
+        self.model.train()
+        # Freeze BN stat
+        for n, m in self.model.named_modules():
+            if any(filter(lambda f: f in n, self.freeze_layer_names)) and isinstance(m, nn.BatchNorm2d):
+                m.eval()
+
+    def preprocess_batch(self, batch:dict)->dict:
+        """Preprocess a batch of images by scaling and converting to float.
+        Args:
+            batch (dict): Dict containing batch data with 'img' tensor
+        Returns:
+            (dict): Preprocessed batch with normalized images
+        """
+        for k, v in batch.items():
+            if isinstance(v, torch.Tensor): batch[k]=v.to(self.device, non_blocking=self.device.type=='cuda')
+        batch['img']=batch['img'].float()/255
+        if self.args.multi_scale:
+            imgs=batch['img']
+            sz=(
+                random.randrange(int(self.args.imgsz*0.5), int(self.args.imgsz*1.5+self.stride))
+                //self.stride
+                *self.stride
+            )
+            sf=sz/max(imgs.shape[2:]) # scale factor
+            if sf!=1:
+                ns=[
+                    math.ceil(x*sf/self.stride)*self.stride for x in imgs.shape[2:]
+                ]# new shape (stretched to grid-shape multiple)
+                imgs=nn.functional.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
+            batch['img']=imgs
+        return batch
+
+    def optimizer_step(self):
+        """Perform a single step of the training optimizer with gradient clipping and EMA update."""
+        #self.scaler.unscale_(self.optimizer) # unscale gradients
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.)
+        #self.scaler.step(self.optimizer)
+        #self.scaler.update()
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+        #if self.ema: self.ema.update(self.model)
+
+    def _get_memory(self, fraction=False):
+        """Get accelerator memory utilization in GB or as a fraction of total memory"""
+        memory, total=0,0
+        if self.device.type=='mps':
+            memory=torch.mps.driver_allocated_memory()
+            if fraction: return __import__("psutil").virtual_memory().percent/100
+        elif self.device.type!='cpu':
+            memory=torch.cuda.memory_reserved()
+            if fraction: total=torch.cuda.get_device_properties(self.device).total_memory
+        return ((memory/total) if total>0 else 0) if fraction else (memory/2**30)
+
+    def plot_training_samples(self, batch:dict[str, Any], ni:int)->None:
+        """Plot training samples with their annotations.
+        Args:
+            batch (dict[str, Any]): Dict containing batch data
+            ni (int): Number of iterations/batch items trained so far
+        """
+        plot_images(labels=batch, paths=batch['im_file'], fname=self.save_dir/f"train_batch{ni}.jpg")
+
+    def train_each_epoch(self, epoch, last_opt_step):
+        """Training of each epoch
+        Args:
+            epoch (int): Current epoch
+            last_opt_step (int): Last iteration that gradients were accumulated
+        Returns:
+            (int): Last iteration that gradients were accumulated
+        """
+        nb=len(self.train_loader) # number of batches
+        # self.args.warmup_epochs is the number of epochs spent warming up the optimizer
+        # we multiply self.args.warmup_epochs by nb since training updates happen per batch (iteration)
+        # warm up over nw optimization steps/iterations, i.e., nw is the number of time we will perform learning-rate adjustment for warmup
+        nw=max(round(self.args.warmup_epochs*nb), 100) if self.args.warmup_epochs>0 else -1 
+        
+        self.tloss=None
+        for i, batch in enumerate(self.train_loader):
+            # Warmup
+            ni=i+nb*epoch # current number of iterations/batch items since epoch counts from 0 and nb is the total number of batches 
+            if ni<=nw:
+                xi=[0, nw] 
+                # controling how often to accumulate
+                # During warmup, starting with frequent small nominal batch size (i.e., accumulate more often) and moving toward the stable, 
+                # larger nominal batch size.
+                self.accumulate=max(1, int(np.interp(ni, xi, [1, self.args.nbs/self.batch_size]).round()))
+                for j, x in enumerate(self.optimizer.param_groups):
+                    # Bias lr falls from 0.1 to lr0, all others lrs rise from 0. to lr0
+                    x['lr']=np.interp(ni, xi, [self.args.warmup_bias_lr if j==0 else 0.0, x['initial_lr']*self.lf(epoch)])
+                    if 'momentum' in x:
+                        x['momentum']=np.interp(ni, xi, [self.args.warmup_momentum, self.args.momentum])
+            # Forward
+            batch=self.preprocess_batch(batch)
+            if self.args.compile:
+                # Decouple inference and loss calculations for improved compile performance
+                preds=self.model(batch['img'])
+                loss, self.loss_items=unwrap_model(self.model).loss(batch, preds)
+            else: loss, self.loss_items=self.model(batch)
+            self.loss=loss.sum()
+            self.tloss=self.loss_items if self.tloss is None else (self.tloss*i+self.loss_items)/(i+1)
+        
+            # Backward
+            # trainer.scaler.scale(trainer.loss).backward()
+            self.loss.backward()
+            if ni-last_opt_step>=self.accumulate:
+                self.optimizer_step()
+                last_opt_step=ni
+        
+                #Time stopping
+                if self.args.time:
+                    self.stop=(time.time()-self.train_time_start)>(self.args.time*3600)
+                    if self.stop: break
+            # Log
+            loss_length=self.tloss.shape[0] if len(self.tloss.shape) else 1
+            print(("%11s"*2+"%11.4g"*(2+loss_length)) % (
+                f"{epoch+1}/{self.epochs}",
+                f"{self._get_memory():.3g}G", # (GB) GPU memory utilization
+                *(self.tloss if loss_length>1 else torch.unsqueeze(self.tloss, 0)), # losses
+                batch['cls'].shape[0], # batch size, e.g., 8
+                batch['img'].shape[-1], # imgsz, e.g., 640
+            ))
+            if self.args.plots and ni in self.plot_idx: self.plot_training_samples(batch, ni)
+        return last_opt_step
+
+    def _clear_memory(self, threshold:float|None=None):
+        """Clear accelerator memory by calling garbage collector and emptying cache
+        Args:
+            threshold (float, optional): If provided, memory will be clear only the fraction of memory used above the input threshold
+        """
+        if threshold:
+            assert 0<=threshold<=1, "Threshold must be between 0 and 1"
+            if self._get_memory(fraction=True)<=threshold: return
+        gc.collect()
+        if self.device.type=='mps': torch.mps.empty_cache()
+        elif self.device.type=='cpu': return
+        else: torch.cuda.empty_cache()
