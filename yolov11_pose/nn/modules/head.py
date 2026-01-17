@@ -26,7 +26,7 @@ class Detect(nn.Module):
     format=None # export format
     end2end=False # end2end
     max_det=300
-    shape=None
+    shape=None # input shape
     anchors=torch.empty(0)
     strides=torch.empty(0)
     legacy=False # backward compatibility for v3-v9

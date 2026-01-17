@@ -84,6 +84,85 @@ def box_iou(box1: torch.Tensor, box2: torch.Tensor, eps: float = 1e-7) -> torch.
 
     # IoU = inter / (area1 + area2 - inter)
     return inter / ((a2 - a1).prod(2) + (b2 - b1).prod(2) - inter + eps)
+
+def bbox_iou(box1:torch.Tensor, box2:torch.Tensor, xywh:bool=True, GIoU:bool=False, DIoU:bool=False, CIoU:bool:False,
+    eps:float=1e-7):
+    """Calculate the Intersection over Union (IoU) between bounding boxes
+    
+    This function supports various shapes for `box1` and `box2` as long as the last dimension is 4. For instance, you may pass tensors shaped like
+    (4,), (N,4), (B,N,4) or (B,N,1,4). Internally, the code will split the last dimension into (x,y,w,h) if `xywh=True` or (x1,y1,x2,y2) 
+    if `xywh=False`
+    
+    Args:
+        box1 (torch.Tensor): A tensor representing one or more bounding boxes, with the last dimension being 4
+        box2 (torch.Tensor): A tensor representing one or more bounding boxes, with the last dimension being 4
+        xywh (bool, optional): If True, input boxes are in (x,y,w,h) format. Otherwise, input boxes are in (x1,y1,x2,y2) format
+        GIoU (bool, optional): If True, calculate Generalized IoU
+        DIoU (bool, optional): If True, calculate Distance IoU
+        CIoU (bool, optional): If True, calculate Complete IoU
+        eps (float, optional): A small value to avoid division by zero
+    Returns:
+        (torch.Tensor): IoU, GIoU, DIoU, and CIoU values depending on the specified flags
+    References:
+        Z. Zheng, et al. Distance-IoU Loss: Faster and Better Learning for Bounding Box Regression, 2019, https://arxiv.org/abs/1911.08287
+        Y-F Zhang, et al. Focal and Efficient IOU Loss for Accurate Bounding Box Regression, 2022, https://arxiv.org/abs/2101.08158 
+            (maybe interesting future work)
+    """
+    # Get the coordinates of bounding boxes
+    if xywh: # transform from xywh to xyxy
+        (x1,y1,w1,h1),(x2,y2,w2,h2)=box1.chunk(4,-1), box2.chunk(4,-1)
+        w1_,h_1,w2_,h2_=w1/2,h1/2,w2/2,h2/2
+        b1_x1, b1_x2, b1_y1, b1_y2=x1-w1_, x1+w1_, y1-h1_, y1+h1_
+        b2_x1, b2_x2, b2_y1, b2_y2=x2-w2_, x2+w2_, y2-h2_, y2+h2_
+    else: # xyxy
+        b1_x1,b1_y1,b1_x2,b1_y2=box1.chunk(4,-1)
+        b2_x1,b2_y1,b2_x2,b2_y2=box2.chunk(4,-1)
+        w1,h1=b1_x2-b1_x1, b1_y2-b1_y1+eps
+        w2,h2=b2_x2-b2_x1, b2_y2-b2_y1+eps
+        
+    # Intersection area
+    inter=(b1_x2.minimum(b2_x2)-b1_x1.maximum(b2_x1)).clamp_(0) * (b1_y2.minimum(b2_y2)-b1_y1.maximum(b2_y1)).clamp_(0)
+    
+    # Union area
+    union=w1*h1 + w2*h2 - inter+eps
+    
+    # IoU
+    iou=inter/union # overlapping penalty ranging 0 to 1
+    if CIoU or DIoU or GIoU:
+        cw=b1_x2.maximum(b2_x2)-b1_x1.minimum(b2_x1) # convex (smallest enclosing box) width
+        ch=b1_y2.maximum(b2_y2)-b1_y1.minimum(b2_y1) # convex (smallest enclosing box) height
+        if CIoU or DIoU: # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+            # Compute the squared length of the diagonal of the convex hull, representing the maximum squared distance the two boxes could be
+            # inside the enclosing box
+            c2=cw.pow(2)+ch.pow(2)+eps 
+            # Compute the squared distance between the center of box1 and box2, i.e., (xc2 - xc1)^2 + (yc2-yc1)^2, where xc2=(b2_x1+b2_x2)/2
+            # how far apart the two centers are
+            rho2=(
+                (b2_x1+b2_x2-b1_x1-b1_x2).pow(2)+(b2_y1+b2_y2-b1_y1-b1_y2).pow(2)
+            )/4 # center dist**2
+            # Below we use rho2/c2 \in [0,1] as a distance penalty where c2 is used to normalized rho2 so the penalty is scale-invariant, 
+            # thus stable across all box sizes and comparable for small and large objects. This penalty encourages moving the boxes closer together if
+            # boxes don't overlap; thus, it provides a value even though the boxes don't touch and/or overlap, therefore providing a smooth gradient 
+            # and preventing vanishing gradient (localization improves, especiall[y early in training)
+            if CIoU: # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
+                # CIoU ensures matching of shape (thr ratio of width to height, i.e., aspect ratio)
+                # v measuring differences between aspect ratio of box1 and box2, thus v is a shape penalty
+                # - atan(w/h) measures the angle between the diagonal to its vertical axis
+                # - differences between the angles describes how tilted the shape of box1 compared to box2
+                # - the maximum value of atan pi/2 [i.e., atan \in [0, pi/2]], squaring gives pi^2 / 4. 
+                # - thus, multiplying by 4/pi^2 ensures that v \in [0,1]
+                v=(4/(math.pi**2)) *((w2/h2).atan()-(w1/h1).atan()).pow(2) 
+                # Non-differentiable trade-off parameter, gives more importance to aspect ratio penalty (v) when the overlap (iou) is high
+                with torch.no_grad(): alpha=v/(v-iou+(1+eps)) 
+                return iou-(rho2/c2 + v*alpha) # CIoU comprising overlap penalty, distance penalty (pulling boxes together) and shape penalty
+            return iou-rho2/c2 # DIoU
+        # GIoU measures the differences between overlapping area and emptiness, ranging [-1, 1]. -1 when IoU=0 and 1 when IoU=1
+        # - c_area is the area of the smallest enclosing box
+        # - (c_area-union) measures the empty space, i.e., area inside the enclosing box that is not occupied by the two boxes
+        # Thus, if two boxes do not overlap, IoU=0 (giving no gradient) but the emptiness term provides gradient
+        c_area=cw*ch+eps # convex area
+        return iou - (c_area-union)/c_area  # GIoU https://arxiv.org/pdf/1902.09630.pdf
+    return iou
     
 def batch_probiou(obb1: torch.Tensor | np.ndarray, obb2: torch.Tensor | np.ndarray, eps: float = 1e-7) -> torch.Tensor:
     """Calculate the probabilistic IoU between oriented bounding boxes.

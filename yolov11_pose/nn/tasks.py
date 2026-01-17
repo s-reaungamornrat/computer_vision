@@ -15,6 +15,7 @@ from computer_vision.yolov11_pose.utils.ops import make_divisible
 from computer_vision.yolov11_pose.nn.modules import Conv, DWConv, C3k2, SPPF, C2PSA, Concat, Pose, Detect
 from computer_vision.yolov11_pose.utils.torch_utils import initialize_weights, model_info, intersect_dicts, fuse_conv_and_bn
 from computer_vision.yolov11_pose.utils import IterableSimpleNamespace
+from computer_vision.yolov11_pose.utils.loss import v8PoseLoss
 
 class DetectionModel(nn.Module):
     """
@@ -234,8 +235,8 @@ class PoseModel(DetectionModel):
         """
         Initialize the loss criterion for PoseModel
         """
-        #return v8PoseLoss()
-        raise NotImplementedError('Please implement me, see https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py#L551')
+        return v8PoseLoss(self)
+        #raise NotImplementedError('Please implement me, see https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py#L551')
 
 def yaml_model_load(path):
     """
