@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from computer_vision.yolov11_pose.utils.metrics import OKS_SIGMA
-from computer_vision.yolov11_pose.utils.tal import TaskAlignedAssigner, dist2bbox
+from computer_vision.yolov11_pose.utils.metrics import OKS_SIGMA, bbox_iou
+from computer_vision.yolov11_pose.utils.tal import TaskAlignedAssigner, dist2bbox, bbox2dist
 from computer_vision.yolov11_pose.utils.ops import xywh2xyxy
 
 class DFLoss(nn.Module):
@@ -20,6 +20,26 @@ class DFLoss(nn.Module):
         """
         super().__init__()
         self.reg_max=reg_max
+        
+    def __call__(self, pred_dist:torch.Tensor, target:torch.Tensor)->torch.Tensor:
+        """Return sum of left and right DFL losses from https://ieeexplore.ieee.org/document/9792391
+        Args:
+            pred_dist (torch.Tensor): Predicted distance of left-top and right-bottom from the anchor centers with shape (4*M,reg_max) where
+                4 is for left,top,right,bottom, M is the number of boxes, and reg_max is the number of distance bins
+            target (torch.Tensor): Target distance left-top and right-bottom from the anchor centers with shape (M, 4)
+        Returns:
+            (torch.Tensor): DFL loss with shape (M,1)
+        """
+        target=target.clamp_(0, self.reg_max-1-0.01) # clamp between 0 and maximum distance
+        tl=target.long() # (M, 4) target left, i.e., round down to int
+        tr=tl+1 # (M, 4) target right
+        wl=tr-target# (M, 4) weight left: distance between target and target-right
+        wr=1-wl # (M, 4) weight right
+        # tl.view(-1) convert (M, 4) to (M*4,)
+        return (
+            F.cross_entropy(pred_dist, tl.view(-1), reduction='none').view(tl.shape)*wl+ # (M*4)->(M,4)
+            F.cross_entropy(pred_dist, tr.view(-1), reduction='none').view(tl.shape)*wr # (M*4)->(M,4)
+        ).mean(-1, keepdim=True)  # (M,4)->(M,1)
 
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses for bounding boxes"""

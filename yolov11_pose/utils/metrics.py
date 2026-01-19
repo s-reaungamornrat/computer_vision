@@ -85,7 +85,7 @@ def box_iou(box1: torch.Tensor, box2: torch.Tensor, eps: float = 1e-7) -> torch.
     # IoU = inter / (area1 + area2 - inter)
     return inter / ((a2 - a1).prod(2) + (b2 - b1).prod(2) - inter + eps)
 
-def bbox_iou(box1:torch.Tensor, box2:torch.Tensor, xywh:bool=True, GIoU:bool=False, DIoU:bool=False, CIoU:bool:False,
+def bbox_iou(box1:torch.Tensor, box2:torch.Tensor, xywh:bool=True, GIoU:bool=False, DIoU:bool=False, CIoU:bool=False,
     eps:float=1e-7):
     """Calculate the Intersection over Union (IoU) between bounding boxes
     
@@ -94,15 +94,15 @@ def bbox_iou(box1:torch.Tensor, box2:torch.Tensor, xywh:bool=True, GIoU:bool=Fal
     if `xywh=False`
     
     Args:
-        box1 (torch.Tensor): A tensor representing one or more bounding boxes, with the last dimension being 4
-        box2 (torch.Tensor): A tensor representing one or more bounding boxes, with the last dimension being 4
+        box1 (torch.Tensor): A Nx4 tensor representing one or more bounding boxes, with the last dimension being 4 and N is the number of boxes
+        box2 (torch.Tensor): A Nx4 tensor representing one or more bounding boxes, with the last dimension being 4 and N is the number of boxes
         xywh (bool, optional): If True, input boxes are in (x,y,w,h) format. Otherwise, input boxes are in (x1,y1,x2,y2) format
         GIoU (bool, optional): If True, calculate Generalized IoU
         DIoU (bool, optional): If True, calculate Distance IoU
         CIoU (bool, optional): If True, calculate Complete IoU
         eps (float, optional): A small value to avoid division by zero
     Returns:
-        (torch.Tensor): IoU, GIoU, DIoU, and CIoU values depending on the specified flags
+        (torch.Tensor): Nx1 values of IoU, GIoU, DIoU, and CIoU depending on the specified flags
     References:
         Z. Zheng, et al. Distance-IoU Loss: Faster and Better Learning for Bounding Box Regression, 2019, https://arxiv.org/abs/1911.08287
         Y-F Zhang, et al. Focal and Efficient IOU Loss for Accurate Bounding Box Regression, 2022, https://arxiv.org/abs/2101.08158 
@@ -110,32 +110,32 @@ def bbox_iou(box1:torch.Tensor, box2:torch.Tensor, xywh:bool=True, GIoU:bool=Fal
     """
     # Get the coordinates of bounding boxes
     if xywh: # transform from xywh to xyxy
-        (x1,y1,w1,h1),(x2,y2,w2,h2)=box1.chunk(4,-1), box2.chunk(4,-1)
-        w1_,h_1,w2_,h2_=w1/2,h1/2,w2/2,h2/2
-        b1_x1, b1_x2, b1_y1, b1_y2=x1-w1_, x1+w1_, y1-h1_, y1+h1_
-        b2_x1, b2_x2, b2_y1, b2_y2=x2-w2_, x2+w2_, y2-h2_, y2+h2_
+        (x1,y1,w1,h1),(x2,y2,w2,h2)=box1.chunk(4,-1), box2.chunk(4,-1) # each of size Nx1
+        w1_,h_1,w2_,h2_=w1/2,h1/2,w2/2,h2/2 # each of size Nx1
+        b1_x1, b1_x2, b1_y1, b1_y2=x1-w1_, x1+w1_, y1-h1_, y1+h1_ # each of size Nx1
+        b2_x1, b2_x2, b2_y1, b2_y2=x2-w2_, x2+w2_, y2-h2_, y2+h2_ # each of size Nx1
     else: # xyxy
-        b1_x1,b1_y1,b1_x2,b1_y2=box1.chunk(4,-1)
-        b2_x1,b2_y1,b2_x2,b2_y2=box2.chunk(4,-1)
-        w1,h1=b1_x2-b1_x1, b1_y2-b1_y1+eps
-        w2,h2=b2_x2-b2_x1, b2_y2-b2_y1+eps
+        b1_x1,b1_y1,b1_x2,b1_y2=box1.chunk(4,-1) # each of size Nx1
+        b2_x1,b2_y1,b2_x2,b2_y2=box2.chunk(4,-1) # each of size Nx1
+        w1,h1=b1_x2-b1_x1, b1_y2-b1_y1+eps # each of size Nx1
+        w2,h2=b2_x2-b2_x1, b2_y2-b2_y1+eps # each of size Nx1
         
-    # Intersection area
+    # Nx1 Intersection area
     inter=(b1_x2.minimum(b2_x2)-b1_x1.maximum(b2_x1)).clamp_(0) * (b1_y2.minimum(b2_y2)-b1_y1.maximum(b2_y1)).clamp_(0)
     
-    # Union area
+    # Nx1 Union area
     union=w1*h1 + w2*h2 - inter+eps
     
-    # IoU
+    # Nx1 IoU
     iou=inter/union # overlapping penalty ranging 0 to 1
     if CIoU or DIoU or GIoU:
         cw=b1_x2.maximum(b2_x2)-b1_x1.minimum(b2_x1) # convex (smallest enclosing box) width
         ch=b1_y2.maximum(b2_y2)-b1_y1.minimum(b2_y1) # convex (smallest enclosing box) height
         if CIoU or DIoU: # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
-            # Compute the squared length of the diagonal of the convex hull, representing the maximum squared distance the two boxes could be
+            # Compute the Nx1 squared length of the diagonal of the convex hull, representing the maximum squared distance the two boxes could be
             # inside the enclosing box
             c2=cw.pow(2)+ch.pow(2)+eps 
-            # Compute the squared distance between the center of box1 and box2, i.e., (xc2 - xc1)^2 + (yc2-yc1)^2, where xc2=(b2_x1+b2_x2)/2
+            # Compute the Nx1 squared distance between the center of box1 and box2, i.e., (xc2 - xc1)^2 + (yc2-yc1)^2, where xc2=(b2_x1+b2_x2)/2
             # how far apart the two centers are
             rho2=(
                 (b2_x1+b2_x2-b1_x1-b1_x2).pow(2)+(b2_y1+b2_y2-b1_y1-b1_y2).pow(2)
