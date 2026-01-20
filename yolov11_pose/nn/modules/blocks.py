@@ -360,14 +360,20 @@ class DFL(nn.Module):
         """
         super().__init__()
         self.conv = nn.Conv2d(c1, 1, 1, bias=False).requires_grad_(False)
-        x = torch.arange(c1, dtype=torch.float)
-        self.conv.weight.data[:] = nn.Parameter(x.view(1, c1, 1, 1))
+        x = torch.arange(c1, dtype=torch.float) # [0,1,2,3,...,c1-1]
+        self.conv.weight.data[:] = nn.Parameter(x.view(1, c1, 1, 1)) # not differentiable
         self.c1 = c1
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply the DFL module to input tensor and return transformed output."""
+        """Apply the DFL module to input tensor and return transformed output.
+        Args:
+            x (torch.Tensor): Input feature with shape (B,C,N) where N is the number of anchors/sum of H*W from all feature levels, 
+                C is the channel dimension must be equal to 4*c1 (where c1 is reg_max representing the number of distance bin in feature grid unit)
+        """
         b, _, a = x.shape  # batch, channels, anchors
-        return self.conv(x.view(b, 4, self.c1, a).transpose(2, 1).softmax(1)).view(b, 4, a)
+        # Consider input at batch b, feature-grid index (i,j), convolution involves applying c1 weight vector to each vector channel of input (b,:,i,j)
+        # resulting in output at (b,0,i,j). If c1 is of size 16, this will be a dot product of two 16-element vectors for b*i*j times
+        return self.conv(x.view(b, 4, self.c1, a).transpose(2, 1).softmax(1)).view(b, 4, a) # (B,4,reg_max,N)->(B, reg_max, 4, N)->(B,1,4,N)->(B,4,N)
         # return self.conv(x.view(b, self.c1, 4, a).softmax(1)).view(b, 4, a)
 
 
