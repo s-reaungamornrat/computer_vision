@@ -15,4 +15,5 @@ parser.add_argument('--resume', action='store_true', help='whether to resume tra
 parser.add_argument('--device', type=str, default='cuda', choices=['cpu','cuda'],help='computing device')
 parser.add_argument('--epochs', type=int, default=None, help='number of training epochs')
 parser.add_argument('--time', type=float, default=None, help='hours to train models before stopping to be resumed later')
+parser.add_argument('--print-freq', type=int, default=500, help='print training progress every iteration')
 # args=parser.parse_args(argument.split())

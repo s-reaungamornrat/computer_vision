@@ -464,13 +464,14 @@ class DetectionTrainer:
                     if self.stop: break
             # Log
             loss_length=self.tloss.shape[0] if len(self.tloss.shape) else 1
-            print(("%11s"*2+"%11.4g"*(2+loss_length)) % (
-                f"{epoch+1}/{self.epochs}",
-                f"{self._get_memory():.3g}G", # (GB) GPU memory utilization
-                *(self.tloss if loss_length>1 else torch.unsqueeze(self.tloss, 0)), # losses
-                batch['cls'].shape[0], # batch size, e.g., 8
-                batch['img'].shape[-1], # imgsz, e.g., 640
-            ))
+            if self.args.print_freq is not None and self.args.print_freq>0 and ni>0 and ni%self.args.print_freq==0:
+                print(("%11s"*2+"%11.4g"*(2+loss_length)) % (
+                    f"{epoch+1}/{self.epochs}",
+                    f"{self._get_memory():.3g}G", # (GB) GPU memory utilization
+                    *(self.tloss if loss_length>1 else torch.unsqueeze(self.tloss, 0)), # losses
+                    batch['cls'].shape[0], # batch size, e.g., 8
+                    batch['img'].shape[-1], # imgsz, e.g., 640
+                ))
             if self.args.plots and ni in self.plot_idx: self.plot_training_samples(batch, ni)
         return last_opt_step
 
