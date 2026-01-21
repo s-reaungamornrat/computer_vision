@@ -13,4 +13,6 @@ parser.add_argument('--data', type=str, default='coco8-pose.yaml', help='data co
 parser.add_argument('--visualize', action='store_true', help='whether to visualize model features (predict) or TP/FP/FN confusion (val)')
 parser.add_argument('--resume', action='store_true', help='whether to resume training')
 parser.add_argument('--device', type=str, default='cuda', choices=['cpu','cuda'],help='computing device')
+parser.add_argument('--epochs', type=int, default=None, help='number of training epochs')
+parser.add_argument('--time', type=float, default=None, help='hours to train models before stopping to be resumed later')
 # args=parser.parse_args(argument.split())

@@ -16,12 +16,12 @@ from torch import nn, optim
 from computer_vision.yolov11_pose.utils import DEFAULT_CFG_DICT
 from computer_vision.yolov11_pose.cfg import get_cfg
 from computer_vision.yolov11_pose.utils.files import get_latest_run
-from computer_vision.yolov11_pose.utils.torch_utils import init_seeds, unwrap_model, one_cycle, EarlyStopping
+from computer_vision.yolov11_pose.utils.torch_utils import init_seeds, unwrap_model, one_cycle, EarlyStopping, unset_deterministic
 from computer_vision.yolov11_pose.data.utils import check_det_dataset
 from computer_vision.yolov11_pose.nn.tasks import load_checkpoint
 from computer_vision.yolov11_pose.utils.checks import check_imgsz
 from computer_vision.yolov11_pose.data.build import build_yolo_dataset, build_dataloader
-from computer_vision.yolov11_pose.utils.plotting import plot_labels, plot_images
+from computer_vision.yolov11_pose.utils.plotting import plot_labels, plot_images, plot_results
 
 class DetectionTrainer:
     """A base class for creating trainers
@@ -276,13 +276,13 @@ class DetectionTrainer:
     def _close_dataloader_mosaic(self):
         """Update dataloaders to stop using mosaic augmentation"""
         if hasattr(self.train_loader.dataset, 'mosaic'): self.train_loader.dataset.mosaic=False
-        if hasattr(self.train_loader_dataset, 'close_mosaic'): 
+        if hasattr(self.train_loader.dataset, 'close_mosaic'): 
             print('In engine.trainer.DetectionTrainer._close_dataloader_mosaic: closing dataloader mosaic')
             self.train_loader.dataset.close_mosaic(hyp=deepcopy(self.args))
 
     def resume_training(self, ckpt):
         """Resume YOLO training from given epoch and best fitness."""
-        if ckpt is None or not trainer.resume: return
+        if ckpt is None or not self.resume: return
         start_epoch=ckpt.get('epoch', -1)+1
         assert start_epoch>0, (
             f"ckpt {ckpt.keys()} does not contains 'epoch', must mean training complete and the model was save without epoch.\n"
@@ -486,3 +486,153 @@ class DetectionTrainer:
         if self.device.type=='mps': torch.mps.empty_cache()
         elif self.device.type=='cpu': return
         else: torch.cuda.empty_cache()
+            
+    def validate(self):
+        """Run validation on val set using self.validator
+        
+        Returns:
+            metrics (dict): Dict of validation metrics
+            fitness (float): Fitness score for the validation
+        """
+        metrics=self.validator(trainer=self)
+        if metrics is None: return None, None
+        fitness=metrics.pop('fitness', -self.loss.detach().cpu().numpy()) # use loss as fitness measure if not found
+        if not self.best_fitness or self.best_fitness<fitness: self.best_fitness=fitness
+        return metrics, fitness
+
+    def _handle_nan_recovery(self, epoch):
+        """Detect and recover from NaN/Inf loss and fitness collapse by loading last checkpoint."""
+        loss_nan=self.loss is not None and not self.loss.isfinite()
+        fitness_nan=self.fitness is not None and not np.isfinite(self.fitness)
+        fitness_collapse=self.best_fitness and self.best_fitness>0 and self.fitness==0
+        corrupted=loss_nan and (fitness_nan or fitness_collapse)
+        reason='Loss NaN/Inf' if loss_nan else 'Fitness NaN/Inf' if fitness_nan else 'Fitness collapse'
+        if not corrupted: return False
+        if epoch==self.start_epoch or not self.last.exists():
+            warnings.warn(f'{reason} detected but cannot recover from last.pt... since this is the first epoch or checkpoint file does not exist')
+            return False # Cannot recover on first epoch and we let training continue
+        self.nan_recovery_attempts+=1
+        if self.nan_recovery_attempts>3:
+            raise RuntimeError(f'Training failed: NaN persisted for {self.nan_recovery_attempts} epochs')
+        warnings.warn(f'{reason} detected (attempted {self.nan_recovery_attempts}/3), recovering from last.pt...')
+        self._model_train() # set model to train mode before loading checkpoints to avoid inference tensor errors
+        ckpt=load_checkpoint(self.last)
+        model_state=ckpt['model'].float().state_dict()
+        if not all(torch.isfinite(v).all() for v in model_state.values() if isinstance(v, torch.Tensor)):
+            raise RuntimeError(f'Checkpoint {self.last} is corrupted with NaN/Inf weights')
+        unwrap_model(self.model).load_state_dict(model_state)
+        self._load_checkpoint_state(ckpt)
+        del ckpt, model_state
+        self.scheduler.last_epoch=epoch-1
+        return True
+
+    def save_metrics(self, metrics):
+        """Save training metrics to a CSV file"""
+        keys, vals=list(metrics.keys()), list(metrics.values())
+        n=len(metrics)+2 # number of columns
+        t=time.time()-self.train_time_start
+        self.csv.parent.mkdir(parents=True, exist_ok=True) # ensure parent directory exists
+        s="" if self.csv.exists() else ('%s,' *n %('epoch', 'time', *keys)).rstrip(',')+"\n"
+        with open(self.csv, 'a', encoding='utf-8') as f:
+            f.write(s+('%.6g,'*n % (self.epoch+1, t, *vals)).rstrip(',')+"\n")
+
+    def save_model(self):
+        """Save model training checkpoints with additional metadata"""
+        state_dict={"epoch":self.epoch, 
+                    "best_fitness":self.best_fitness, 
+                    "model":self.model.state_dict(),
+                   "optimizer":self.optimizer.state_dict()}
+        # Save checkpoints
+        self.wdir.mkdir(parents=True, exist_ok=True) # ensure weights directory exists
+        torch.save(state_dict, self.last)
+        if self.best_fitness==self.fitness: torch.save(state_dict, self.best)
+        if (self.save_period>0) and (self.epoch%self.save_period==0):
+            torch.save(state_dict, self.wdir/f'epoch{self.epoch}.pt') # save epoch, e.g., 'epoch3.pt'
+
+    def plot_metrics(self):
+        """Plot metrics from a CSV file"""
+        plot_results(file=self.csv) # save results.png
+        
+    def train(self):
+        """Train the model"""
+        self._do_train()
+
+    def _do_train(self):
+        """Train the model with the specified world size"""
+        self._setup_train()
+        
+        nb=len(self.train_loader) # number of batches
+        ## self.args.warmup_epochs is the number of epochs spent warming up the optimizer
+        ## we multiply self.args.warmup_epochs by nb since training updates happen per batch (iteration)
+        ## warm up over nw optimization steps/iterations, i.e., nw is the number of time we will perform learning-rate adjustment for warmup
+        # nw=max(round(trainer.args.warmup_epochs*nb), 100) if trainer.args.warmup_epochs>0 else -1 
+        last_opt_step=-1
+        self.epoch_time=None
+        self.epoch_time_start=time.time()
+        self.train_time_start=time.time()
+        print(f"Image sizes {self.args.imgsz} train, {self.args.imgsz} val\n"
+              f"Using {self.train_loader.num_workers *(self.world_size or 1)} dataloader workers\n"
+              f"Logging results to {self.save_dir}\n"
+              f"Starting training for "+(f"{self.args.time} hours..." if self.args.time else f"{self.epochs} epochs...")
+        )
+        if self.args.close_mosaic:
+            base_idx=(self.epochs-self.args.close_mosaic)*nb # batch iterations in which close_mosaic start
+            self.plot_idx.extend([base_idx, base_idx+1, base_idx+2])
+        epoch=self.start_epoch
+        self.optimizer.zero_grad() # zero any resumed gradients to ensure stability on training start
+        while True:
+            self.epoch=epoch
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore') # suppress 'Detected lr_scheduler.step() before optimizer.step()'
+                self.scheduler.step()
+            self._model_train()
+            # Update dataloader attributes 
+            if epoch==(self.epochs - self.args.close_mosaic): 
+                # TODO: test to see whether we get non-mosaic images after we close the mosaic
+                # set args.plot to true to save a few training images
+                self._close_dataloader_mosaic()
+                #trainer.train_loader.reset()
+            last_opt_step=self.train_each_epoch(epoch, last_opt_step)
+            self.lr={f'lr/pg{ir}':x['lr'] for ir, x in enumerate(self.optimizer.param_groups)}
+            # self.ema.update_attr(self.model, include=["yaml", "nc", "args", "names", "stride", "class_weights"])
+        
+            # Validation
+            final_epoch=epoch+1>=self.epochs
+            if self.args.val or final_epoch or self.stopper.possible_stop or self.stop:
+                self._clear_memory(threshold=0.5) # prevent VRAM spike
+                self.metrics, self.fitness=self.validate()
+        
+            #NaN recovery
+            if self._handle_nan_recovery(epoch): continue
+        
+            self.nan_recovery_attempts=0
+            self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr})
+            self.stop|=self.stopper(epoch+1, self.fitness) or final_epoch
+            if self.args.time: self.stop|=(time.time()-self.train_time_start)>(self.args.time*3600)
+                
+            # Save model
+            if self.args.save or final_epoch: self.save_model()
+        
+            # Scheduler
+            t=time.time()
+            self.epoch_time=t-self.epoch_time_start
+            self.epoch_time_start=t
+            # if self.args.time:
+            #     mean_epoch_time=(t-self.train_time_start)/(epoch-self.start_epoch+1)
+            #     self.epochs=self.args.epochs=math.ceil(self.args.time*3600/mean_epoch_time)
+            #     self._setup_scheduler() # setup scheduler again based on total epochs
+            #     self.scheduler.last_epoch=self.epoch # do not move
+            #     self.stop|=epoch>=self.epochs # stop if training exceeds epochs
+            self._clear_memory(0.5) # clear if memory utilization > 50%
+        
+            # Early stopping
+            if self.stop: break
+            epoch+=1
+        
+        # done training loop
+        seconds=time.time()-self.train_time_start
+        print(f"\n{epoch-self.start_epoch+1} epochs completed in {seconds/3600:.3f} hours")
+        # do final val with best.pt
+        if self.args.plots: self.plot_metrics()
+        self._clear_memory()
+        unset_deterministic()
