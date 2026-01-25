@@ -21,3 +21,8 @@ pip install wget
 pip install pyyaml
 pip install polars
 ```
+
+## To remove conda environment
+```
+conda remove -n ENV_NAME --all
+```

@@ -44,6 +44,7 @@ class Detect(nn.Module):
         self.reg_max=16 # DFL channels or DFL number of discrete bins
         self.no=nc+self.reg_max*4 # number of outputs per anchor where bins are for each box dimension
         self.stride=torch.zeros(self.nl) # strides computed during build
+        # c2 is for bounding boxes while c3 is for classes
         c2,c3=max(16, ch[0]//4, self.reg_max*4), max(ch[0], min(self.nc, 100)) # channels
         self.cv2=nn.ModuleList(
             nn.Sequential(Conv(x,c2,3), Conv(c2,c2,3),nn.Conv2d(c2, 4*self.reg_max, 1)) for x in ch
