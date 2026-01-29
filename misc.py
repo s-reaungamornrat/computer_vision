@@ -2,7 +2,33 @@ import cv2
 import copy
 import torch
 import random
+import requests
 import numpy as np
+
+def download_image_to_numpy(url):
+    """
+    Download image from URL. URL must to raw link to image, not to webpages like those picture links in github
+    Args:
+        url (str): Raw web location of picture, e.g.,
+            - raw picture link: https://raw.githubusercontent.com/pytorch/vision/main/gallery/assets/astronaut.jpg 
+            - webpage link: https://github.com/pytorch/vision/blob/main/gallery/assets/astronaut.jpg
+    Returns:
+        (ndarray): Image array with shape (H, W, C) where C is RGB 
+    """
+    # 1. Fetch the image from the URL
+    response = requests.get(url, headers={"User-Agent":""})
+    if response.status_code!=200: raise RuntimeError(f'Failed to download video {response.status_code=}.')
+    # 2. Convert the response content into a byte array
+    # image_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+    image_array = np.frombuffer(response.content, dtype=np.uint8)
+    
+    # 3. Decode the byte array into an OpenCV image (NumPy array)
+    image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+    
+    # 4. Convert BGR to RBG
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    return image
 
 def rescale(img, out_min=0., out_max=1.):
     '''
