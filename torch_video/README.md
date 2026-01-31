@@ -29,3 +29,10 @@ pip install -U openxlab
 
 UCF101 (Top recommendation)
 HMDB51 (Even smaller, very clean)
+
+
+## Example
+[video classification](https://github.com/pytorch/vision/tree/main/references)
+
+## TODO
+https://docs.pytorch.org/vision/stable/auto_examples/others/index.html

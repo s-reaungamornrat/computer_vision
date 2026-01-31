@@ -11,6 +11,8 @@
 */*.pth
 *.pt
 *.pth
+*.mp4
+*.avi
 */build/
 *build/
 */dist/
