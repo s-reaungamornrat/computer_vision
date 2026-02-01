@@ -11,7 +11,8 @@ T = TypeVar("T")
 import torch
 from torchvision.io import _probe_video_from_file, _read_video_from_file, read_video, read_video_timestamps
 
-from .utils import unfold
+from .utils import unfold, find_classes, has_file_allowed_extension, make_dataset
+from .dataset import VisionDataset
 
 class _VideoTimestampsDataset:
     def __init__(self, video_paths:list[str])->None: self.video_paths=video_paths
@@ -242,3 +243,78 @@ class VideoClip:
         # [T,H,W,C]->[T,C,H,W]
         video=video.permute(0,3,1,2)
         return video, audio, info, video_idx
+
+class UCF101(VisionDataset):
+    def __init__(self, root:Union[str, Path], annotation_path:str, frames_per_clip:int, step_between_clips:int=1,
+                frame_rate:Optional[int]=None,fold:int=1, train:bool=True, transforms:Optional[Callable]=None,
+                num_workers:int=1, metadata_path:str=None)->None:
+        super().__init__(root, transforms=transforms)
+
+        if not 1<=fold<=3: raise ValueError(f"Fold should be between 1 and 3, but got {fold}")
+
+        extensions=('avi',)
+        self.fold=fold
+        self.train=train
+
+        self.classes, class_to_idx=find_classes(self.root)
+        self.samples=make_dataset(self.root, class_to_idx, extensions, is_valid_file=None)
+        video_list=[x[0] for x in self.samples]
+
+        video_clips=VideoClip(video_paths=video_list, clip_length_in_frames=frames_per_clip,frames_between_clips=step_between_clips,
+                          num_workers=num_workers,metadata_path=metadata_path)
+
+        # We bookkeep the full version of video clips because we want to be able to return the metadata of full version rather than the
+        # subset version of video clips
+        self.full_video_clips=video_clips
+        self.indices=self._select_fold(video_list, annotation_path, fold, train)
+        self.video_clips=video_clips.subset(self.indices)
+        self.transforms=transforms
+
+    def _select_fold(self, video_list:list[str], annotation_path:str, fold:int, train:bool)->list[int]:
+        """Read txt file listing video files for the specified fold and find the indices of those files in all `video_list`
+        Args:
+            video_list (list[str]): List of all absolute paths to all video files
+            annotation_path (str): Path to directory containing annotation txt file for each fold
+            fold (int): Data fold with options of 1, 2 or 3
+            train (bool): Whether data is for training or testing
+        Returns:
+            (list[int]): Indices of selected video from video_list
+        """
+        name='train' if train else 'test'
+        name=f"{name}list{fold:02d}.txt"
+        f=os.path.join(annotation_path, name)
+        selected_files=set()
+        with open(f) as fid:
+            data=fid.readlines()
+            data=[x.strip().split(" ")[0] for x in data]
+            data=[os.path.join(self.root, *x.split("/")) for x in data]
+            selected_files.update(data)
+        indices=[i for i in range(len(video_list)) if video_list[i] in selected_files]
+        return indices
+
+    @property
+    def metadata(self)->dict[str, Any]:
+        return self.full_video_clips.metadata
+
+    def __len__(self)->int: return self.video_clips.num_clips()
+
+    def __getitem__(self, idx:int)->tuple[torch.Tensor, torch.Tensor, int]:
+        video, audio, info, video_idx=self.video_clips.get_clip(idx)
+        label=self.samples[self.indices[video_idx]][1]
+        info['name']=self.video_clips.video_paths[video_idx]
+        if self.transforms is not None: video=self.transforms(video)
+        return video, audio, label, info, video_idx
+
+
+if __name__ == '__main__':
+
+    data_dirpath=Path('D:/data/UCF101')
+    root=data_dirpath/'UCF-101'
+    annotation_path=data_dirpath/'UCF101TrainTestSplits-RecognitionTask'
+    dataset=UCF101(root=root, annotation_path=annotation_path, frames_per_clip=16, step_between_clips=2, train=True) 
+    video, audio, label, info, video_idx=dataset[0]
+    print(f"{video.shape=}, {video.dtype=}") # video.shape=torch.Size([16, 3, 240, 320]), video.dtype=torch.uint8
+    print(f"{audio.shape=}, {audio.dtype=}") # audio.shape=torch.Size([2, 18432]), audio.dtype=torch.float32
+    print(f"{label=}") # label=0
+    print(f"{info=}") # info={'video_fps': 25.0, 'audio_fps': 44100, 'name': 'D:\\data\\UCF101\\UCF-101\\ApplyEyeMakeup\\v_ApplyEyeMakeup_g08_c01.avi'}
+    print(f"{video_idx=}") # video_idx=0
