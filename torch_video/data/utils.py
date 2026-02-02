@@ -4,6 +4,44 @@ from typing import Any, Callable, Optional, Union, cast
 
 import torch
 
+# def compute_timestamp_clip_sampling_params(video_duration, average_fps, frame_rate=8, clip_duration=2, step_duration=1):
+#     """Compute parameters for clips_at_regular_timestamps and clips_at_random_timestamps
+#     Args:
+#         video_duration (float): Duration of the video in seconds
+#         average_fps (float): Average frame rate of the original input video in frame per second
+#         frame_rate (float): Desired/output frame rate
+#         clip_duration (float): How long each clip captures in second
+#         step_duration (float): Distance between the start of each clip in seconds.
+#     Returns:
+#         clip_start_times (torch.Tensor): Start times in seconds of each clip as 1D float tensor of size N where the number of clips
+#         num_frames_per_clip (int): Number of frames per clip
+#         seconds_between_frames (float): Distance between each frame in seconds
+#     """
+#     if video_duration<clip_duration: return None,None,None
+def compute_clip_start_times(video_duration, clip_duration=2, step_duration=1):
+    """Compute parameters for clips_at_regular_timestamps and clips_at_random_timestamps
+    Args:
+        video_duration (float): Duration of the video in seconds
+        clip_duration (float): How long each clip captures in second
+        step_duration (float): Distance between the start of each clip in seconds.
+    Returns:
+        clip_start_times (torch.Tensor): Start times in seconds of each clip as 1D float tensor of size N where the number of clips
+    """
+    if video_duration<clip_duration: return None
+        
+    # # Determine the interval between frames within a clipp
+    # sampling_fps=frame_rate if frame_rate else average_fps
+    # seconds_between_frames=1./sampling_fps
+    
+    # # Determine number of frames per clip
+    # num_frames_per_clip=int(clip_duration*sampling_fps)
+    
+    # Calculate all possible clip-start time: we stop before the end to ensure the full clip can be extracted
+    stop_time=max(0, video_duration-clip_duration)
+    clip_start_times=torch.arange(0, stop_time, step_duration)
+    
+    return clip_start_times
+    
 def has_file_allowed_extension(filename:str, extension:Union[str, tuple[str, ...]])->bool:
     """Check if a file is an allowed extension
     Args:

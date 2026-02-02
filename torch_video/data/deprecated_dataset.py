@@ -12,7 +12,7 @@ import torch
 from torchvision.io import _probe_video_from_file, _read_video_from_file, read_video, read_video_timestamps
 
 from .utils import unfold, find_classes, has_file_allowed_extension, make_dataset
-from .dataset import VisionDataset
+from .base import VisionDataset
 
 class _VideoTimestampsDataset:
     def __init__(self, video_paths:list[str])->None: self.video_paths=video_paths
