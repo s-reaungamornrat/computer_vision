@@ -14,6 +14,10 @@ from torchcodec.samplers import clips_at_regular_timestamps, clips_at_random_tim
 from .base import VisionDataset
 from .utils import find_classes, has_file_allowed_extension, make_dataset, compute_clip_start_times
 
+DATA_MEAN=(0.43216, 0.394666, 0.37645)
+DATA_STD=(0.22803, 0.22145, 0.216989)
+NUM_CLASSES=101
+
 class ConvertTCHWtoCTHW(nn.Module):
     """Convert a tensor from (T,C,H,W) to (C,T,H,W) where T is the number of frames in the clip
 
