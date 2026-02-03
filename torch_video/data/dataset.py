@@ -6,13 +6,24 @@ from typing import Any, Callable, Optional, Union, cast
 import numpy as np
 
 import torch
+import torch.nn as nn
+from torchvision.transforms import v2
 from torchcodec.decoders import VideoDecoder, AudioDecoder
 from torchcodec.samplers import clips_at_regular_timestamps, clips_at_random_timestamps
 
 from .base import VisionDataset
 from .utils import find_classes, has_file_allowed_extension, make_dataset, compute_clip_start_times
 
-class VideoClipMetadata:
+class ConvertTCHWtoCTHW(nn.Module):
+    """Convert a tensor from (T,C,H,W) to (C,T,H,W) where T is the number of frames in the clip
+
+    We convert (T,C,H,W) to (C,T,H,W) so the tensor is in a format ready to be inputted into 3D CNN where it expects input of shape
+    (B,C,T,H,W)
+    """
+    def forward(self, video:torch.Tensor)->torch.Tensor:
+        return video.permute(1,0,2,3)
+         
+class VideoClipMetadata: 
     """
     Args:
         video_paths (list[str],optional): List of absolute paths to video files
@@ -151,10 +162,11 @@ class VideoClipMetadata:
         
         return video_idx, clip_idx
 
-    def get_clip(self, idx:int)->tuple[torch.Tensor, torch.Tensor, dict[str,Any], int]:
+    def get_clip(self, idx:int, transforms:Optional[list[Callable]]=None)->tuple[torch.Tensor, torch.Tensor, dict[str,Any], int]:
         """Get a clip from a list of videos
         Args:
             idx (int): Index of the clip. Must be between [0, num_clips)
+            transforms (list[callable], optional): List of decoder transforms based on torchvision.transforms.v2
         Returns:
             (torch.Tensor): Video clip data of type uint8 and shape (T,C,H,W) where T is the number of frames, C is the number of channels,
                 H is height and W is width
@@ -168,7 +180,7 @@ class VideoClipMetadata:
         clip_start_time=self.clip_start_times[video_idx][clip_idx].item() # list[tensor] where 1D tensor is a set of PTS of clips from each video
         
         # Sample clips
-        video_decoder=VideoDecoder(video_path)
+        video_decoder=VideoDecoder(video_path, transforms=transforms)
         # Extract video_clip
         # video_clip.data will be of uint tensor with shape (N,T,C,H,W) where N=1 number of clips and T number of frames per clip
         # video_clip.pts_seconds is (N,T) float tensor is the start timestamp of each frame in each clip in seconds
@@ -195,7 +207,7 @@ class VideoClipMetadata:
             )
         info={'video_fps':self.frame_rate}
     
-        audio=None
+        audio_clip=None
         if self.use_audio:
             audio_decoder=AudioDecoder(video_path, sample_rate=self.sample_rate, num_channels=1)
             # video_clip.pts_seconds and video_clip.duration_seconds are of size (N,T) but for us, N=1 so we index it out by [0]
@@ -228,6 +240,8 @@ class UCF101(VisionDataset):
         step_duration (float, optional): Distance between the start of each clip in seconds.
         train (bool, optional): If ``True``, create a dataset from the train spit, oetherwise from the ``test`` split
         transforms (callable, optional): A function/transform that takes in the video and annotation and returns the transformed versions
+        decoder_transforms (list[callable, optional]): A list of decoder transformations see 
+            https://meta-pytorch.org/torchcodec/stable/generated_examples/decoding/transforms.html
         metadata_path (str): Path to .pt file storing video clip metadata, including clip-start timestamp, seconds_per_frame, etc.
         fold (int): Data fold with options of 1, 2 or 3. Must specify since training fold1, fold2, and fold3 overlap and not worth training 
             all of them together
@@ -242,14 +256,13 @@ class UCF101(VisionDataset):
             - video_idx (int): Index of video
     """
     def __init__(self, root: Union[str, Path], annotation_path: Union[str, Path], frame_rate:float=8, clip_duration:float=2, step_duration:float=1.7,
-                train:bool=True, fold:int=None, sampling_type:str='regular', use_audio:bool=False, transforms:Optional[Callable]=None, 
-                 metadata_path:str=None )->None:
+                 train:bool=True, fold:int=None, sampling_type:str='regular', use_audio:bool=False, transforms:Optional[Callable]=None, 
+                 decoder_transforms:Optional[list[Callable]]=None, metadata_path:str=None )->None:
 
         if not 1<=fold<=3: raise ValueError(f"Fold should be between 1 and 3, but got {fold}")
             
         super().__init__(root=root, transforms=transforms)
         
-        print(f"{use_audio=}")
         extension=("avi",)
         self.train=train
         self.frame_rate=frame_rate
@@ -268,6 +281,7 @@ class UCF101(VisionDataset):
         self.indices=self._select_fold(self.video_paths, annotation_path, fold, train)
         self.video_clip_metadata=self.full_video_clip_metadata.subset(self.indices)
         self.transforms=transforms
+        self.decoder_transforms=decoder_transforms
 
     @property
     def metadata(self)->dict[str, Any]:
@@ -301,11 +315,31 @@ class UCF101(VisionDataset):
     def __getitem__(self, idx:int)->tuple[torch.Tensor, torch.Tensor, dict[str,Any], int]:
         """Get input video and target label"""
         
-        video, audio, info, video_idx=self.video_clip_metadata.get_clip(idx)
+        video, audio, info, video_idx=self.video_clip_metadata.get_clip(idx, transforms=self.decoder_transforms)
         label=self.samples[self.indices[video_idx]][1]
         
         if self.transforms is not None: video=self.transforms(video)
-        return video, audio, label, video_idx, info
+        if self.video_clip_metadata.use_audio: return video, audio, label, video_idx, info
+        return video, label, video_idx, info
 
 if __name__ == '__main__':
-    pass
+    
+    data_dirpath=Path('D:/data/UCF101')
+    root=data_dirpath/'UCF-101'
+    annotation_path=data_dirpath/'UCF101TrainTestSplits-RecognitionTask'
+    metadata_path=data_dirpath/'metadata.pt'
+    frame_rate=8
+    clip_duration=2
+    step_duration=1.7
+    fold=1
+    dataset=UCF101(root=root, annotation_path=annotation_path, frame_rate=frame_rate, clip_duration=clip_duration, step_duration=step_duration,
+                   train=True, metadata_path=metadata_path, fold=fold, sampling_type='random', use_audio=True) 
+    video, audio, label, video_idx, info=dataset[0]
+    print(f"{video.shape=}, {video.dtype=}, {audio.shape=}, {audio.dtype=}")
+    print(f"{info=}, {label=}, {video_idx=}")
+
+    from torchcodec.encoders import VideoEncoder
+    encoder=VideoEncoder(frames=video, frame_rate=info['video_fps']) # frame_rate is the frame rate of input video
+    encoded_frames=encoder.to_tensor(format='mp4')
+    # play_video(encoded_frames)
+    # play_audio(audio, rate=info['audio_fps'])
