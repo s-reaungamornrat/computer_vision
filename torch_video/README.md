@@ -15,6 +15,7 @@ See [PytorchVideo/Install.md](https://github.com/facebookresearch/pytorchvideo/b
 - `pip install requests` # for getting videos from URL
 - `pip install fsspec aiohttp` # if using file-like object to speed up video read and seek [see](https://meta-pytorch.org/torchcodec/stable/generated_examples/decoding/file_like.html)
 - `pip install joblib` # for multiprocessing and multithreading capabilities [see](https://meta-pytorch.org/torchcodec/stable/generated_examples/decoding/parallel_decoding.html)
+- `pip install polars` # for fast csv file processing
 
 
 ## Download Kinetics Dataset
