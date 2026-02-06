@@ -15,10 +15,10 @@ parser.add_argument("--clip-duration", type=float, default=2, help="length of ex
 parser.add_argument("--step-duration", type=float, default=1.7, help="step between each video clips in seconds")
 parser.add_argument("--max-n-clips-per-video", type=int, default=5, help="maximum number of clips per video")
 # Augmentation
-parser.add_argument("--val-resize-size", default=(112,112), nargs="+", type=int, help="the resize size for validation (default:(128, 171))")
-parser.add_argument("--val-crop-size", default=(240, 240), nargs="+", type=int, help="the central crop size for validation (default:(112, 112))")
-parser.add_argument("--train-resize-size", default=(112,112), nargs="+", type=int, help="the resize size for training (default:(128, 171))")
-parser.add_argument("--train-crop-size", default=(240, 240), nargs="+", type=int, help="the random crop size for training (default:(128, 171))")
+parser.add_argument("--val-resize-size", default=(112,112), nargs="+", type=int, help="the resize size for validation (default:(112, 112))")
+parser.add_argument("--val-crop-size", default=(226, 226), nargs="+", type=int, help="the central crop size for validation (default:(226, 226))")
+parser.add_argument("--train-resize-size", default=(112,112), nargs="+", type=int, help="the resize size for training (default:(112, 112))")
+parser.add_argument("--train-crop-size", default=(226, 226), nargs="+", type=int, help="the random crop size for training (default:(226, 226))")
 parser.add_argument("--hflip-prob", default=0.5, type=float, help="probability of flipping training data horizontally")
 # for CutMix and Mixup
 # 1  (uniform) for equally-likely blending factors for all factors (e.g., 50/50, 10/90, etc)
