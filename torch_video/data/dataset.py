@@ -46,10 +46,12 @@ class VideoClipMetadata:
         num_ffmpeg_threads (int): The number of threads to use for decoding. Use 1 for single-threaded decoding, use a higher number for multi-threaded 
             decoding, and use 0 lets FFmpeg decide on the number of threads. 
             see https://meta-pytorch.org/torchcodec/stable/generated/torchcodec.decoders.VideoDecoder.html#torchcodec.decoders.VideoDecoder
+        n_retries (int): Number of retries to extract a clip
     Reference: https://github.com/pytorch/vision/blob/main/torchvision/datasets/video_utils.py#L137
     """
     def __init__(self, video_paths, clip_length_in_seconds=16, clip_stride_in_seconds=1, frame_rate=None, metadata:dict[str, Any]=None,
-                 sampling_type:str='regular', use_audio=False, sample_rate=16000, metadata_path:Union[str,Path]=None, num_ffmpeg_threads:int=0):
+                 sampling_type:str='regular', use_audio=False, sample_rate=16000, metadata_path:Union[str,Path]=None, num_ffmpeg_threads:int=0,
+                 n_retries:int=10):
 
         assert sampling_type in ('regular', 'random'), f"{sampling_type} must be either 'regular' or 'random'"
         
@@ -60,6 +62,7 @@ class VideoClipMetadata:
         self.use_audio=use_audio
         self.sample_rate=sample_rate
         self.num_ffmpeg_threads=num_ffmpeg_threads
+        self.n_retries=n_retries
 
         if metadata_path is not None and os.path.isfile(metadata_path): metadata=torch.load(metadata_path, weights_only=False)
         if metadata is None: 
@@ -170,6 +173,35 @@ class VideoClipMetadata:
         
         return video_idx, clip_idx
 
+    def _get_random_clip(self, video_decoder, num_frames_per_clip, seconds_between_frames, sampling_range_start, num_clips=1, policy="wrap"):
+        """Get random clip
+        Args:
+            video_decoder (VideoDecoder): See https://meta-pytorch.org/torchcodec/stable/generated/torchcodec.decoders.VideoDecoder.html#torchcodec.decoders.VideoDecoder
+            num_frames_per_clip (int): Number of frames per clip
+            seconds_between_frames (float): Seconds between each frame
+            sampling_range_start (float): The start of the sampling range, which defines the first timestamp (in seconds) that a clip may start at
+            num_clips (int): Number of clips to extract
+            policy (str): Defines how to construct clips that span beyond the end of the video. See https://meta-pytorch.org/torchcodec/stable/generated/torchcodec.samplers.clips_at_random_timestamps.html#torchcodec.samplers.clips_at_random_timestamps
+        Returns:
+            (torch.Tensor): Video clip data of type uint8 and shape (T,C,H,W) where T is the number of frames, C is the number of channels,
+                H is height and W is width
+        """
+        i=0
+        while i<self.n_retries:
+            try:
+                video_clip = clips_at_random_timestamps(
+                    video_decoder,
+                    num_clips=num_clips,
+                    num_frames_per_clip=self.num_frames_per_clip,
+                    seconds_between_frames=self.seconds_between_frames,
+                    sampling_range_start=sampling_range_start,
+                    policy=policy,
+                )
+                return video_clip
+            except Exception as e:  i+=1
+                
+        raise RuntimeError(f"Failed to request a random clip after trying {self.n_retries} times")
+        
     def get_clip(self, idx:int, transforms:Optional[list[Callable]]=None)->tuple[torch.Tensor, torch.Tensor, dict[str,Any], int]:
         """Get a clip from a list of videos
         Args:
@@ -205,14 +237,17 @@ class VideoClipMetadata:
                 policy="wrap",
             )
         else:
-            video_clip = clips_at_random_timestamps(
-                video_decoder,
-                num_clips=1,
-                num_frames_per_clip=self.num_frames_per_clip,
-                seconds_between_frames=self.seconds_between_frames,
-                sampling_range_start=clip_start_time if np.random.uniform()>0.5 else None,
-                policy="wrap",
-            )
+            video_clip=self._get_random_clip(video_decoder, num_frames_per_clip=self.num_frames_per_clip, 
+                                             seconds_between_frames=self.seconds_between_frames,
+                                             sampling_range_start=clip_start_time if np.random.uniform()>0.5 else None, num_clips=1)
+            # video_clip = clips_at_random_timestamps(
+            #     video_decoder,
+            #     num_clips=1,
+            #     num_frames_per_clip=self.num_frames_per_clip,
+            #     seconds_between_frames=self.seconds_between_frames,
+            #     sampling_range_start=clip_start_time if np.random.uniform()>0.5 else None,
+            #     policy="wrap",
+            # )
         info={'video_fps':self.frame_rate}
     
         audio_clip=None
