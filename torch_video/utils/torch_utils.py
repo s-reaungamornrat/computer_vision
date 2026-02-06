@@ -11,7 +11,7 @@ def clear_memory(device, threshold:float=None):
     """Clear accelerator memory by calling garbage collector and emptying cache"""
     if threshold:
         assert 0<=threshold<=1, "Threshold must be in the range [0,1]"
-        if get_memory(fraction=True)<=threshold: return
+        if get_memory(device=device, fraction=True)<=threshold: return
     gc.collect()
     if device.type=='mps': torch.mps.empty_cache()
     elif device.type=='cpu': return

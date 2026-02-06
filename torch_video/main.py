@@ -46,7 +46,7 @@ def main(args):
     
     train(args, device, model, model_without_ddp, criterion, optimizer, lr_scheduler, train_loader, val_loader, best_acc, train_sampler=None)
 
-    clear_memory()
+    clear_memory(device=device)
     
     if (args.ouput_path/"result.csv").is_file: plot_results(args.ouput_path/"result.csv")
         
