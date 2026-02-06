@@ -174,7 +174,8 @@ class VideoClipMetadata:
         return video_idx, clip_idx
 
     def _get_random_clip(self, video_decoder, num_frames_per_clip, seconds_between_frames, sampling_range_start, num_clips=1, policy="wrap"):
-        """Get random clip
+        """Get random clip by allowing retrying if error occurs (from for example, trying to extract frames beyond the end of video, though `policy`
+        should take care of this case but it does not)
         Args:
             video_decoder (VideoDecoder): See https://meta-pytorch.org/torchcodec/stable/generated/torchcodec.decoders.VideoDecoder.html#torchcodec.decoders.VideoDecoder
             num_frames_per_clip (int): Number of frames per clip
