@@ -8,7 +8,7 @@ import numpy as np
 
 from computer_vision.torch_video.parameter_parser import parser
 from computer_vision.torch_video.utils.train_utils import create_dataloader, setup_training, train
-from computer_vision.torch_video.utils.torch_utils import init_seeds, init_distributed_mode, load_checkpoint
+from computer_vision.torch_video.utils.torch_utils import init_seeds, init_distributed_mode, load_checkpoint, clear_memory
 from computer_vision.torch_video.utils.plotting import plot_results
 from computer_vision.torch_video.data.dataset import NUM_CLASSES
 
@@ -45,6 +45,9 @@ def main(args):
     print("Start training")
     
     train(args, device, model, model_without_ddp, criterion, optimizer, lr_scheduler, train_loader, val_loader, best_acc, train_sampler=None)
+
+    clear_memory()
+    
     if (args.ouput_path/"result.csv").is_file: plot_results(args.ouput_path/"result.csv")
         
     total_time=time.time()-start_time

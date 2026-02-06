@@ -43,10 +43,13 @@ class VideoClipMetadata:
         use_audio (bool): Whether to extract audio data as well
         sample_rate (float,optional): Desired/output sampling rate of audio
         metadata_path (Union[str,Path]): Path to .pt storing video-clip metadata including clip-start timestamp, seconds_between_frame, etc.
+        num_ffmpeg_threads (int): The number of threads to use for decoding. Use 1 for single-threaded decoding, use a higher number for multi-threaded 
+            decoding, and use 0 lets FFmpeg decide on the number of threads. 
+            see https://meta-pytorch.org/torchcodec/stable/generated/torchcodec.decoders.VideoDecoder.html#torchcodec.decoders.VideoDecoder
     Reference: https://github.com/pytorch/vision/blob/main/torchvision/datasets/video_utils.py#L137
     """
     def __init__(self, video_paths, clip_length_in_seconds=16, clip_stride_in_seconds=1, frame_rate=None, metadata:dict[str, Any]=None,
-                 sampling_type:str='regular', use_audio=False, sample_rate=16000, metadata_path:Union[str,Path]=None):
+                 sampling_type:str='regular', use_audio=False, sample_rate=16000, metadata_path:Union[str,Path]=None, num_ffmpeg_threads:int=0):
 
         assert sampling_type in ('regular', 'random'), f"{sampling_type} must be either 'regular' or 'random'"
         
@@ -56,6 +59,7 @@ class VideoClipMetadata:
         self.clip_length_in_seconds=clip_length_in_seconds
         self.use_audio=use_audio
         self.sample_rate=sample_rate
+        self.num_ffmpeg_threads=num_ffmpeg_threads
 
         if metadata_path is not None and os.path.isfile(metadata_path): metadata=torch.load(metadata_path, weights_only=False)
         if metadata is None: 
@@ -184,7 +188,7 @@ class VideoClipMetadata:
         clip_start_time=self.clip_start_times[video_idx][clip_idx].item() # list[tensor] where 1D tensor is a set of PTS of clips from each video
         
         # Sample clips
-        video_decoder=VideoDecoder(video_path, transforms=transforms)
+        video_decoder=VideoDecoder(video_path, transforms=transforms, num_ffmpeg_threads=self.num_ffmpeg_threads)
         # Extract video_clip
         # video_clip.data will be of uint tensor with shape (N,T,C,H,W) where N=1 number of clips and T number of frames per clip
         # video_clip.pts_seconds is (N,T) float tensor is the start timestamp of each frame in each clip in seconds
@@ -251,6 +255,9 @@ class UCF101(VisionDataset):
             all of them together
         sampling_type (str): Clip sampling type with options of 'regular' and 'random'
         use_audio (bool): Whether to return accompany audio data for each video data
+        num_ffmpeg_threads (int): The number of threads to use for decoding. Use 1 for single-threaded decoding, use a higher number for multi-threaded 
+            decoding, and use 0 lets FFmpeg decide on the number of threads. 
+            see https://meta-pytorch.org/torchcodec/stable/generated/torchcodec.decoders.VideoDecoder.html#torchcodec.decoders.VideoDecoder
     Returns:
         (tuple): A 3-tuple with the following entries:
             - video (Tensor): A set of video frames with shape (T,C, H, W) where T is the number of video frames
@@ -261,7 +268,7 @@ class UCF101(VisionDataset):
     """
     def __init__(self, root: Union[str, Path], annotation_path: Union[str, Path], frame_rate:float=8, clip_duration:float=2, step_duration:float=1.7,
                  train:bool=True, fold:int=None, sampling_type:str='regular', use_audio:bool=False, transforms:Optional[Callable]=None, 
-                 decoder_transforms:Optional[list[Callable]]=None, metadata_path:str=None )->None:
+                 decoder_transforms:Optional[list[Callable]]=None, metadata_path:str=None, num_ffmpeg_threads:int=0 )->None:
 
         if not 1<=fold<=3: raise ValueError(f"Fold should be between 1 and 3, but got {fold}")
             
@@ -277,7 +284,8 @@ class UCF101(VisionDataset):
 
         video_list=[x[0] for x in self.samples]
         video_clip_metadata=VideoClipMetadata(video_paths=video_list,clip_length_in_seconds=clip_duration, clip_stride_in_seconds=step_duration,
-                                              frame_rate=frame_rate, sampling_type=sampling_type, use_audio=use_audio, metadata_path=metadata_path)
+                                              frame_rate=frame_rate, sampling_type=sampling_type, use_audio=use_audio, metadata_path=metadata_path,
+                                              num_ffmpeg_threads=num_ffmpeg_threads)
         # We bookkeep the full version of video clip metadata because we want to be able to return the metadata of full version rather than the
         # subset version of video clips
         self.full_video_clip_metadata=video_clip_metadata

@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, default_collate
 from .plotting import plot_results
 from .progress import MetricLogger, SmoothedValue, form_stats, save_metrics
 from .metrics import accuracy
-from .torch_utils import reduce_across_processes, initialize_weights, seed_worker, save_checkpoint
+from .torch_utils import reduce_across_processes, initialize_weights, seed_worker, save_checkpoint, clear_memory
 from computer_vision.torch_video.data.sampler import RandomClipSampler, UniformClipSampler
 from computer_vision.torch_video.data.dataset import UCF101, ConvertTCHWtoCTHW, DATA_MEAN, DATA_STD, NUM_CLASSES
 
@@ -30,7 +30,8 @@ def train(args, device, model, model_without_ddp, criterion, optimizer, lr_sched
         stop|=train_one_epoch(model, criterion, optimizer, lr_scheduler, data_loader=train_loader, device=device, epoch=epoch, 
                               print_freq=args.print_freq, max_time=args.time, start_time=args.start_training_time, 
                               metric_logger=train_metric_logger, n_batches=args.n_batches)
-        
+
+        clear_memory(threshold=0.5)
         val_metric_logger=MetricLogger(delimiter=' ')
         acc1=evaluate(model, criterion, data_loader=val_loader, device=device, metric_logger=val_metric_logger,
                      n_batches=args.n_batches, distributed=args.distributed)
@@ -49,9 +50,11 @@ def train(args, device, model, model_without_ddp, criterion, optimizer, lr_sched
             save_metrics(args.ouput_path/"result.csv", stats, epoch=epoch, start_epoch_time=start_epoch_time)
             if args.plot_freq>0 and (epoch+1)%args.plot_freq==0: plot_results(args.ouput_path/"result.csv")
 
+        clear_memory(threshold=0.5) # clear if memory utilization>50%
+        
         if all(x is not None for x in [args.start_training_time,args.time]):
             stop|=(time.time()-args.start_training_time)>(args.time*3600)
-            
+
         if stop: break
 
         

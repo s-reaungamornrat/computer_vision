@@ -1,10 +1,37 @@
 import os
+import gc
 import random
 
 import torch
 import torch.nn as nn
 import torch.distributed as dist
 import numpy as np
+
+def clear_memory(device, threshold:float=None):
+    """Clear accelerator memory by calling garbage collector and emptying cache"""
+    if threshold:
+        assert 0<=threshold<=1, "Threshold must be in the range [0,1]"
+        if get_memory(fraction=True)<=threshold: return
+    gc.collect()
+    if device.type=='mps': torch.mps.empty_cache()
+    elif device.type=='cpu': return
+    else: torch.cuda.empty_cache()
+        
+def get_memory(device, fraction=False):
+    """Get accelerator memory utilization in GB or as a fraction of total memory
+    Args:
+        device (torch.device): Computing device
+    Returns:
+        (float): Memory utilization in GB or as a fraction of total memory
+    """
+    memory, total=0,0
+    if device.type=='mps':
+        memory=torch.mps.driver_allocated_memory()
+        if fraction: return __import__("psutil").virtual_memory().percent/100
+    elif device.type!='cpu':
+        memory=torch.cuda.memory_reserved()
+        if fraction: total=torch.cuda.get_device_properties(device).total_memory
+    return ((memory/total) if total>0 else 0) if fraction else (memory/ 2**30)
         
 def initialize_weights(model):
     """Initialize model weights to random values"""

@@ -56,6 +56,7 @@ parser.add_argument('--time', default=None, type=float, help='hours to train the
 parser.add_argument('--n-batches', default=None, type=int, help='number of batches to run before stopping--for debugging purposes')
 # Mixed precision training parameters
 parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
+parser.add_argument('--num-ffmpeg-threads', default=0, type=int, help='number of threads. default 0 for letting FFmpeg decide on the number of threads')
 
 # distributed training
 parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
