@@ -1,0 +1,1 @@
+[Model size and performance](https://github.com/facebookresearch/SlowFast/tree/main/projects/pytorchvideo)
