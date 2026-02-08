@@ -146,7 +146,7 @@ def save_checkpoint(fpath, model, optimizer, lr_scheduler, epoch, best_acc, scal
     torch.save(checkpoint, fpath)
 
 
-def load_checkpoint(fpath, model, optimizer, lr_scheduler, scaler):
+def load_checkpoint(fpath, model, optimizer=None, lr_scheduler=None, scaler=None):
     """Load checkpoint. The state_dicts of model,optimizer, lr_scheduler, and/or scaler will get updated via pass by reference
     so we do not need to return the updated model, optimizer, lr_scheduler, scaler
     Args:
@@ -161,8 +161,8 @@ def load_checkpoint(fpath, model, optimizer, lr_scheduler, scaler):
     """
     checkpoint=torch.load(fpath, map_location='cpu', weights_only=False)
     model.load_state_dict(checkpoint['model'])
-    optimizer.load_state_dict(checkpoint['optimizer'])
-    lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+    if optimizer is not None: optimizer.load_state_dict(checkpoint['optimizer'])
+    if lr_scheduler is not None: lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
     if scaler is not None: scaler.load_state_dict(checkpoint['scaler'])
     print(f"Resume training from epoch {checkpoint['epoch']+1} with best_acc at {checkpoint['best_acc']} based on checkpoint {fpath}")
     return checkpoint['epoch']+1, checkpoint['best_acc']
