@@ -40,6 +40,29 @@ class Trainer:
             val_loader (torch.utils.data.DataLoader): Validation data loader
         """
         
+        # # Data loader
+        # train_dataset=UCF101(root=args.data_path, annotation_path=args.annotation_path, frame_rate=args.frame_rate, 
+        #                      clip_duration=args.clip_duration, step_duration=args.step_duration,
+        #                      train=True, metadata_path=args.metadata_path, fold=args.data_fold, sampling_type='random', use_audio=False,
+        #                      decoder_transforms=[v2.RandomCrop(size=args.train_crop_size),
+        #                                          v2.Resize(args.train_resize_size)],
+        #                      transforms=v2.Compose([
+        #                          v2.RandomHorizontalFlip(p=args.hflip_prob),
+        #                          v2.ToDtype(torch.float32, scale=True),
+        #                          v2.Normalize(mean=DATA_MEAN,std=DATA_STD),
+        #                          ConvertTCHWtoCTHW()])
+        #                     ) 
+        
+        # val_dataset=UCF101(root=args.data_path, annotation_path=args.annotation_path, frame_rate=args.frame_rate, 
+        #                      clip_duration=args.clip_duration, step_duration=args.step_duration,
+        #                      train=False, metadata_path=args.metadata_path, fold=args.data_fold, sampling_type='regular', use_audio=False,
+        #                      decoder_transforms=[v2.CenterCrop(size=args.train_crop_size),
+        #                                          v2.Resize(args.train_resize_size)],
+        #                      transforms=v2.Compose([
+        #                          v2.ToDtype(torch.float32, scale=True),
+        #                          v2.Normalize(mean=DATA_MEAN,std=DATA_STD),
+        #                          ConvertTCHWtoCTHW()])
+        #                     ) 
         # Data loader
         train_dataset=UCF101(root=args.data_path, annotation_path=args.annotation_path, frame_rate=args.frame_rate, 
                              clip_duration=args.clip_duration, step_duration=args.step_duration,
@@ -48,9 +71,7 @@ class Trainer:
                                                  v2.Resize(args.train_resize_size)],
                              transforms=v2.Compose([
                                  v2.RandomHorizontalFlip(p=args.hflip_prob),
-                                 v2.ToDtype(torch.float32, scale=True),
-                                 v2.Normalize(mean=DATA_MEAN,std=DATA_STD),
-                                 ConvertTCHWtoCTHW()])
+                                 ])
                             ) 
         
         val_dataset=UCF101(root=args.data_path, annotation_path=args.annotation_path, frame_rate=args.frame_rate, 
@@ -58,10 +79,7 @@ class Trainer:
                              train=False, metadata_path=args.metadata_path, fold=args.data_fold, sampling_type='regular', use_audio=False,
                              decoder_transforms=[v2.CenterCrop(size=args.train_crop_size),
                                                  v2.Resize(args.train_resize_size)],
-                             transforms=v2.Compose([
-                                 v2.ToDtype(torch.float32, scale=True),
-                                 v2.Normalize(mean=DATA_MEAN,std=DATA_STD),
-                                 ConvertTCHWtoCTHW()])
+                             transforms=None
                             ) 
         
         if args.use_cutmix_mixup:
@@ -84,8 +102,8 @@ class Trainer:
             warning.warn("Not supported yet. Please see https://github.com/pytorch/vision/blob/main/torchvision/datasets/samplers/clip_sampler.py#L11")
         
         num_cuda=torch.cuda.device_count() # number of CUDA devices
-        self.train_loader=DataLoader(train_dataset, batch_size=args.batch_size, sampler=None, # train_sampler,
-                               num_workers=args.num_workers, pin_memory=num_cuda>0,
+        self.train_loader=DataLoader(train_dataset, batch_size=args.batch_size, sampler=self.train_sampler, # train_sampler,
+                               num_workers=args.num_workers, pin_memory=num_cuda>0,shuffle=False,
                                drop_last=len(train_dataset)%args.batch_size!=0, worker_init_fn=seed_worker,
                                collate_fn=collate_fn)
         self.val_loader=DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler,
@@ -93,12 +111,10 @@ class Trainer:
                                drop_last=len(train_dataset)%args.batch_size!=0, worker_init_fn=seed_worker,
                                collate_fn=None)
 
-    def build_optimizer(self, n_classes, lr=0.001, momentum=0.9, decay=1e-5, iterations=1e5):
+    def build_optimizer(self, n_classes, decay=1e-5, iterations=1e5):
         """Automatically construct an optimizer for the given model.
         Args:
             n_classes (int): Number of classes
-            lr (float, optional): The learning rate for the optimizer
-            momentum (float, optional): The momentum factor for the optimizer
             decay (float, optional): The weight decay for the optimizer
             iterations (float, optional): The number of iterations, which determines the optimizer if name is 'auto'
         """
@@ -108,7 +124,7 @@ class Trainer:
         g=[],[],[] # optimizer parameter groups
         # Automatically determine optimizer
         lr_fit=round(0.002*5/n_classes, 6)
-        name, lr, momentum=('SGD', 0.01, 0.9) if iterations>10000 else ('Adam', lr_fit, 0.9)
+        name, lr, momentum=('SGD', self.args.lr, self.args.momentum) if iterations>10000 else ('Adam', lr_fit, self.args.momentum)
         self.args.warmup_bias_lr=0.
         
         for module_name, module in self.model.named_modules():
@@ -119,7 +135,7 @@ class Trainer:
                 else: g[0].append(param) # weight with decay
         
         if name=='Adam': self.optimizer=torch.optim.AdamW(g[2], lr=lr, betas=(momentum, 0.999), weight_decay=0.)
-        else: self.optimizer=torch.optim.SGD(g[2], lr=lr, momentum=momentum, nesterov=True)
+        else: self.optimizer=torch.optim.SGD(g[2], lr=lr, momentum=momentum, weight_decay=0., nesterov=True)
         self.optimizer.add_param_group({'params':g[0], 'weight_decay':decay})
         self.optimizer.add_param_group({'params':g[1], 'weight_decay':0.})
         print(f"'optimizer:' {type(self.optimizer).__name__}(lr={lr}, momentum={momentum}) with parameter groups "
@@ -130,9 +146,10 @@ class Trainer:
         self.lf=lambda x:max(1-x/self.args.epochs, 0)*(1.-self.args.lrf)+self.args.lrf # linear
         self.scheduler=torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=self.lf)
 
-    def setup_training(self, args, iters_per_epoch, n_classes=NUM_CLASSES):
+    def setup_training(self, args, log_probs, iters_per_epoch, n_classes=NUM_CLASSES):
         """Set up model, loss, optimizer, scaler and sheduler for training
         Args:
+            log_probs (ndarray): Log probabilities of classes used to train the models of size (K,) where K is the number of classes
             iters_per_epoch (int): Number of batches/iterations per epoch
             n_classes (int): Number of classes
             device (torch.device): Computing device
@@ -148,6 +165,7 @@ class Trainer:
         initialize_weights(self.model)
         nn.init.normal_(self.model.fc.weight, mean=0.0, std=0.01) # weights are also initialized to a small Gaussian
         nn.init.zeros_(self.model.fc.bias)
+        self.model.fc.bias.data=torch.from_numpy(log_probs).to(dtype=self.model.fc.bias.data.dtype, device=self.model.fc.bias.data.device)
         # Below makes the initial softmax output match the dataset distribution before seeing any data.
         # but UCF101 is fairly balanced so gains are negligible; and therefore almost no papers bother
         # priors = class_counts / class_counts.sum()
@@ -158,9 +176,10 @@ class Trainer:
         
         self.criterion=nn.CrossEntropyLoss()
         # self.optimizer=torch.optim.SGD(self.model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-        weight_decay=self.args.weight_decay*self.args.batch_size # scale weight decay
+        self.accumulate=max(round(self.args.nbs/self.args.batch_size), 1) # accumulate loss before optimizing
+        weight_decay=self.args.weight_decay*self.args.batch_size *self.accumulate / self.args.nbs # scale weight decay
         iterations=math.ceil(len(self.train_loader.dataset)/self.args.batch_size)*self.args.epochs
-        self.build_optimizer(n_classes=n_classes, lr=self.args.lr, momentum=self.args.momentum, decay=weight_decay, iterations=iterations)
+        self.build_optimizer(n_classes=n_classes, decay=weight_decay, iterations=iterations)
         self.scaler=torch.amp.GradScaler() if (args.device=='cuda' and args.amp) else None
 
         self._setup_scheduler()
@@ -180,9 +199,10 @@ class Trainer:
         #                                                             milestones=[warmup_iters])
         # else: self.lr_scheduler=main_lr_scheduler
 
-    def train_one_epoch(self, epoch, print_freq, max_time=None, start_time=None, metric_logger=None, n_batches=None):
+    def train_one_epoch(self, epoch, last_opt_step, print_freq, max_time=None, start_time=None, metric_logger=None, n_batches=None):
         """Train a model for 1 epoch
         Args:
+            last_opt_step (int): The last update step
             model (torch.nn.Module): Deep learning model
             criterion (torch.nn.Module): Loss function
             optimizer (torch.optim): Optimizer
@@ -223,27 +243,36 @@ class Trainer:
             ni=b+nb*epoch
             if ni<=nw:
                 xi=[0, nw]
+                self.accumulate=max(1, (int(np.interp(ni, xi, [1, self.args.nbs/self.args.batch_size]).round())))
                 for j, x in enumerate(self.optimizer.param_groups):
-                    x['lr']=np.interp(ni, xi, [self.args.warmup_bias_lr if j==0 else 0, x['initial_lr']*self.lf(epoch)])
+                    x['lr']=np.interp(ni, xi, [self.args.warmup_bias_lr if (j==0 and x.get("param_group")=='bias') else 0.,
+                                               x['initial_lr']*self.lf(epoch)])
                     if 'momentum' in x: x['momentum']=np.interp(ni,xi, [self.args.warmup_momentum, self.args.momentum])
 
+            video=video.float()/255.
+            video=video.permute(0,2,1,3,4).contiguous() 
             video=video.to(self.device, non_blocking=self.device.type=='cuda')
-            target=target.to(self.device, non_blocking=self.device.type=='cuda')
+            target=target.long().to(self.device, non_blocking=self.device.type=='cuda')
             assert video.isfinite().all() and video.abs().sum()>0, f'video is Inf or NaN or blank'
             assert target.isfinite().all(), f'target is Inf or NaN'
             #with torch.autocast(device_type="cuda", enabled=(scaler is not None and device.type=='cuda')):
             output=self.model(video)
             self.loss=self.criterion(output, target)
-            self.optimizer.zero_grad()
 
             if self.scaler is not None:
                 self.scaler.scale(self.loss).backward()
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+                self.optimizer.zero_grad()
             else:
                 self.loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.)
                 self.optimizer.step()
+                self.optimizer.zero_grad()
+                last_opt_step=ni
+                
             acc1, acc5=accuracy(output, target, topk=(1,5))
             batch_size=video.shape[0]
             metric_logger.update(loss=self.loss.item())#, lr=self.optimizer.param_groups[0]['lr'])
@@ -256,7 +285,7 @@ class Trainer:
                 stop|=(time.time()-start_time)>(max_time*3600)
                 if stop: return stop; break
                     
-        return stop
+        return last_opt_step, stop
 
     @torch.no_grad()
     def evaluate(self, print_freq=None, metric_logger=None, n_batches=None):
@@ -290,8 +319,12 @@ class Trainer:
                 if n_batches is not None and b>(n_batches-1): 
                     print(f"Hit specified number of batches: {b}/{n_batches}! Terminate!!")
                     break
-                
-                video=video.to(self.device, non_blocking=self.device.type=='cuda') # (B,C,T,H,W)
+    
+                video=video.float()/255.
+                video=video.permute(0,2,1,3,4).contiguous() # (B,T,C,H,W) to (B,C,T,H,W)
+                video=video.to(self.device, non_blocking=self.device.type=='cuda')
+                target=target.long().to(self.device, non_blocking=self.device.type=='cuda')
+                #video=video.to(self.device, non_blocking=self.device.type=='cuda') # (B,C,T,H,W)
                 target=target.to(self.device, non_blocking=self.device.type=='cuda') # 
                 output=self.model(video)
                 loss=self.criterion(output, target)
@@ -344,7 +377,9 @@ class Trainer:
             
     def _do_train(self):
         
-        
+
+        last_opt_step=-1
+        self.optimizer.zero_grad() # zero any resumed gradients to ensure stability on train start
         stop=False
         for epoch in range(self.args.start_epoch, self.args.epochs):
             
@@ -357,8 +392,10 @@ class Trainer:
             if self.distributed and self.train_sampler is not None: self.train_sampler.set_epoch(epoch)
                 
             train_metric_logger=MetricLogger(delimiter=' ')
-            stop|=self.train_one_epoch(epoch=epoch,  print_freq=self.args.print_freq, max_time=self.args.time, start_time=self.args.start_training_time, 
-                                      metric_logger=train_metric_logger, n_batches=self.args.n_batches)
+            last_opt_step, is_stop=self.train_one_epoch(epoch=epoch,  last_opt_step=last_opt_step, print_freq=self.args.print_freq, 
+                                                        max_time=self.args.time, start_time=self.args.start_training_time, 
+                                                        metric_logger=train_metric_logger, n_batches=self.args.n_batches)
+            stop|=is_stop
     
             clear_memory(device=self.device, threshold=0.5)
             val_metric_logger=MetricLogger(delimiter=' ')
@@ -403,7 +440,9 @@ class Trainer:
         self.distributed=self.args.distributed
 
         self.create_dataloader(self.args)
-        self.setup_training(self.args, iters_per_epoch=len(self.train_loader), n_classes=NUM_CLASSES)
+        # log probabilities of classes used to train the models of size (K,) where K is the number of classes
+        log_probs=self.train_loader.dataset.get_label_probs(log_prob=True) 
+        self.setup_training(self.args, log_probs=log_probs, iters_per_epoch=len(self.train_loader), n_classes=NUM_CLASSES)
         
         self.model_without_ddp=self.model
         if self.distributed:

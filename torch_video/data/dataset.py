@@ -63,10 +63,11 @@ class VideoClipMetadata:
         self.sample_rate=sample_rate
         self.num_ffmpeg_threads=num_ffmpeg_threads
         self.n_retries=n_retries
+        self.video_paths=video_paths
 
         if metadata_path is not None and os.path.isfile(metadata_path): metadata=torch.load(metadata_path, weights_only=False)
         if metadata is None: 
-            self._compute_clip_metadata(video_paths, clip_length_in_seconds)
+            self._compute_clip_metadata(self.video_paths, clip_length_in_seconds)
             if metadata_path is not None: torch.save(self.metadata, metadata_path)                                                                           
         else: self._initialize_metatdata(metadata)
 
@@ -80,26 +81,26 @@ class VideoClipMetadata:
             video_list (list[str]): List of absolute path to video files
             clip_length_in_seconds (float): Length of each clip in seconds
         """
-        video_paths=[] # absolute paths to usable video given required clip-duration
+        # video_paths=[] # absolute paths to usable video given required clip-duration
         clip_start_times=[] # clip start timestamps, stored as a list of 1D tensor, where len=number of video and size of tensor=number of clips
-    
-        for video_path in video_list:
+
+        self.invalid_video=[]
+        for i, video_path in enumerate(video_list):
             decoder=VideoDecoder(video_path)
             start_times=compute_clip_start_times(video_duration=decoder.metadata.duration_seconds, clip_duration=clip_length_in_seconds, 
                                                  step_duration=self.clip_stride_in_seconds)
-            if start_times is None: continue
-    
+            if start_times is None: self.invalid_video.append(i)
             # save clip start-time and video-path as this is readable and usable video
             clip_start_times.append(start_times)
-            video_paths.append(video_path) # readable & usable video
+            # video_paths.append(video_path) # readable & usable video
             # if frame_rate is not defined, we set to it to equal the frame_rate of the first video
             if self.frame_rate is None: self.frame_rate=decoder.metadata.average_fps
-    
-        self.video_paths=video_paths # usable video for the required clip duration
+        
+        # self.video_paths=video_paths # usable video for the required clip duration
         self.clip_start_times=clip_start_times # list[Tensor] where len(self.video_paths)==len(self.clip_start_times)
         self.seconds_between_frames=1./self.frame_rate
         self.num_frames_per_clip=int(clip_length_in_seconds*self.frame_rate)
-        self.num_clips_per_video=[x.numel() for x in clip_start_times] # len=len(self.video_paths)
+        self.num_clips_per_video=[x.numel() if isinstance(x,torch.Tensor) else 0 for x in clip_start_times] # len=len(self.video_paths)
         self.cumulative_sizes=np.cumsum(self.num_clips_per_video) # len=len(self.video_paths)
 
     def _initialize_metatdata(self, metadata):
@@ -110,6 +111,7 @@ class VideoClipMetadata:
         self.num_frames_per_clip=metadata['num_frames_per_clip']
         self.num_clips_per_video=metadata['num_clips_per_video']
         self.cumulative_sizes=metadata['cumulative_sizes']
+        self.invalid_video=metadata['invalid_video']
 
     @property
     def metadata(self)->dict[str, Any]:
@@ -121,7 +123,8 @@ class VideoClipMetadata:
             "seconds_between_frames":self.seconds_between_frames,
             "num_frames_per_clip":self.num_frames_per_clip,
             "num_clips_per_video":self.num_clips_per_video,
-            "cumulative_sizes":self.cumulative_sizes
+            "cumulative_sizes":self.cumulative_sizes,
+            "invalid_video":self.invalid_video
         }
         return _metadata
 
@@ -132,11 +135,12 @@ class VideoClipMetadata:
         Returns:
             (VideoClipMetadata): Subset of video-clip metadata
         """
-        video_paths=[self.video_paths[i] for i in indices]
-        clip_start_times=[self.clip_start_times[i] for i in indices]
-        num_clips_per_video=[self.num_clips_per_video[i] for i in indices]
+        assert all(i not in self.invalid_video for i in indices), "Please input `indices` to video contaning at least 1 clip"
+        video_paths=[self.video_paths[i] for i in indices ]
+        clip_start_times=[self.clip_start_times[i] for i in indices ]
+        num_clips_per_video=[self.num_clips_per_video[i] for i in indices ]
         cumulative_sizes=np.cumsum(num_clips_per_video) # len=len(video_paths)
-        
+        assert all(x>0 for x in num_clips_per_video), "Please input `indices` to video that contains at least 1 clip"
         metadata={
             "frame_rate": self.frame_rate,
             "video_paths": video_paths,
@@ -144,7 +148,8 @@ class VideoClipMetadata:
             "seconds_between_frames":self.seconds_between_frames,
             "num_frames_per_clip":self.num_frames_per_clip,
             "num_clips_per_video":num_clips_per_video,
-            "cumulative_sizes":cumulative_sizes
+            "cumulative_sizes":cumulative_sizes,
+            "invalid_video":[]
         }
         return type(self)(video_paths=video_paths,clip_length_in_seconds=self.clip_length_in_seconds, clip_stride_in_seconds=self.clip_stride_in_seconds,
                           frame_rate=self.frame_rate, metadata=metadata, sampling_type=self.sampling_type, use_audio=self.use_audio)
@@ -241,15 +246,8 @@ class VideoClipMetadata:
             video_clip=self._get_random_clip(video_decoder, num_frames_per_clip=self.num_frames_per_clip, 
                                              seconds_between_frames=self.seconds_between_frames,
                                              sampling_range_start=clip_start_time if np.random.uniform()>0.5 else None, num_clips=1)
-            # video_clip = clips_at_random_timestamps(
-            #     video_decoder,
-            #     num_clips=1,
-            #     num_frames_per_clip=self.num_frames_per_clip,
-            #     seconds_between_frames=self.seconds_between_frames,
-            #     sampling_range_start=clip_start_time if np.random.uniform()>0.5 else None,
-            #     policy="wrap",
-            # )
-        info={'video_fps':self.frame_rate}
+
+        info={'video_fps':self.frame_rate, 'video_path':video_path}
     
         audio_clip=None
         if self.use_audio:
@@ -316,30 +314,32 @@ class UCF101(VisionDataset):
         self.clip_duration=clip_duration
         self.step_duration=step_duration
         self.classes, class_to_idx=find_classes(self.root)
+        self.idx_to_class={v:k for k, v in class_to_idx.items()}
         self.samples=make_dataset(self.root, class_to_idx, extension, is_valid_file=None)
 
-        video_list=[x[0] for x in self.samples]
-        video_clip_metadata=VideoClipMetadata(video_paths=video_list,clip_length_in_seconds=clip_duration, clip_stride_in_seconds=step_duration,
-                                              frame_rate=frame_rate, sampling_type=sampling_type, use_audio=use_audio, metadata_path=metadata_path,
-                                              num_ffmpeg_threads=num_ffmpeg_threads)
         # We bookkeep the full version of video clip metadata because we want to be able to return the metadata of full version rather than the
         # subset version of video clips
-        self.full_video_clip_metadata=video_clip_metadata
-        self.video_paths=video_clip_metadata.video_paths
-        self.indices=self._select_fold(self.video_paths, annotation_path, fold, train)
+        video_list=[x[0] for x in self.samples]
+        self.full_video_clip_metadata=VideoClipMetadata(video_paths=video_list,clip_length_in_seconds=clip_duration, clip_stride_in_seconds=step_duration,
+                                              frame_rate=frame_rate, sampling_type=sampling_type, use_audio=use_audio, metadata_path=metadata_path,
+                                              num_ffmpeg_threads=num_ffmpeg_threads)
+        self.invalid_video=[self.full_video_clip_metadata.video_paths[i] for i in self.full_video_clip_metadata.invalid_video]
+        self.indices=self._select_fold(self.full_video_clip_metadata.video_paths, self.invalid_video, 
+                                       annotation_path, fold, train)
         self.video_clip_metadata=self.full_video_clip_metadata.subset(self.indices)
         self.transforms=transforms
         self.decoder_transforms=decoder_transforms
-
+        
     @property
     def metadata(self)->dict[str, Any]:
         """Return video clip metadata of the whole dataset"""
-        return self.full_video_clip_metadata.metadata
-        
-    def _select_fold(self, video_list:list[str], annotation_path:str, fold:int, train:bool)->list[int]:
+        return self.video_clip_metadata.metadata
+
+    def _select_fold(self, video_list:list[str], invalid_video:list[str], annotation_path:str, fold:int, train:bool)->list[int]:
         """Read txt file listing video files for the specified fold and find the indices of those files in all `video_list`
         Args:
             video_list (list[str]): List of all absolute paths to all video files
+            invalid_video (list[int]): List of paths to videos that cannot be used since video time < required clip time
             annotation_path (str): Path to directory containing annotation txt file for each fold
             fold (int): Data fold with options of 1, 2 or 3
             train (bool): Whether data is for training or testing
@@ -355,8 +355,28 @@ class UCF101(VisionDataset):
             data=[x.strip().split(" ")[0] for x in data]
             data=[os.path.join(self.root, *x.split("/")) for x in data]
             selected_files.update(data)
-        indices=[i for i in range(len(video_list)) if video_list[i] in selected_files]
+        indices=[i for i in range(len(video_list)) if (video_list[i] in selected_files and video_list[i] not in invalid_video)]
         return indices
+
+    def get_label_probs(self, log_prob=True):
+        """Compute (log) probability of label of clips in `self.video_clip_metadata`
+        Args:
+            log_prob (bool): Whether to get log probabilities or probabilities
+        Returns:
+            (np.ndarray): (Log) Probabilities of classes of clips in `self.video_clip_metadata`
+        """
+        label_frequency=np.zeros(NUM_CLASSES)
+        for i in self.indices: # indices of select video
+            video_path=self.full_video_clip_metadata.video_paths[i]
+            n_clips=self.full_video_clip_metadata.num_clips_per_video[i]
+            fpath, label=self.samples[i]
+            class_name=self.idx_to_class[label]
+            assert video_path==fpath and  class_name in video_path
+            assert label<NUM_CLASSES
+            label_frequency[label]+=1
+        label_probs=label_frequency/label_frequency.sum()
+        if log_prob: return np.log(label_probs)
+        return label_probs
 
     def __len__(self)->int: return self.video_clip_metadata.num_clips()
 
@@ -365,10 +385,12 @@ class UCF101(VisionDataset):
         
         video, audio, info, video_idx=self.video_clip_metadata.get_clip(idx, transforms=self.decoder_transforms)
         label=self.samples[self.indices[video_idx]][1]
-        
+        info['class']=self.idx_to_class[label]
+        assert info['class'] in info['video_path'], f"Mismatch between class {info['class']} and video data {info['video_path']}"
         if self.transforms is not None: video=self.transforms(video)
         if self.video_clip_metadata.use_audio: return video, audio, label, video_idx, info
         return video, label, video_idx, info
+    
 
 if __name__ == '__main__':
     

@@ -40,7 +40,7 @@ def compute_clip_start_times(video_duration, clip_duration=2, step_duration=1):
     stop_time=max(0, video_duration-clip_duration)
     clip_start_times=torch.arange(0, stop_time, step_duration)
     
-    return clip_start_times
+    return clip_start_times if clip_start_times.numel()>0 else None
     
 def has_file_allowed_extension(filename:str, extension:Union[str, tuple[str, ...]])->bool:
     """Check if a file is an allowed extension
