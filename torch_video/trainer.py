@@ -259,18 +259,21 @@ class Trainer:
             output=self.model(video)
             self.loss=self.criterion(output, target)
 
-            if self.scaler is not None:
-                self.scaler.scale(self.loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                self.optimizer.zero_grad()
-            else:
-                self.loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.)
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+            if self.scaler is not None: self.scaler.scale(self.loss).backward()
+            else: self.loss.backward()
+                
+            if ni-last_opt_step>=self.accumulate:
+                if self.scaler is not None:
+                    self.scaler.scale(self.loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    self.optimizer.zero_grad()
+                else:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
                 last_opt_step=ni
                 
             acc1, acc5=accuracy(output, target, topk=(1,5))
