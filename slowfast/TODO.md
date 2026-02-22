@@ -1,0 +1,3 @@
+- Finish implementation of SlowFastHead functions to allow predict and loss, see `notebook/Recognizer3D.ipynb`
+- Finish implementation of Demo based on `demo.py`
+- Start `test_pipeline` based on [datasets/transforms](https://github.com/open-mmlab/mmaction2/blob/main/mmaction/datasets/transforms/loading.py#L1100)

@@ -66,10 +66,10 @@ class CrossEntropyLoss(BaseWeightedLoss):
         return loss_cls
 
 
-if __name__ == __main__
+if __name__ == "__main__":
 
     loss=CrossEntropyLoss(loss_weight=1.)
     input = torch.randn(3, 5, requires_grad=True)
     target = torch.empty(3, dtype=torch.long).random_(5)
     output = loss(input, target)
-output.backward()
+    output.backward()
