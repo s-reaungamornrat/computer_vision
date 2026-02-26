@@ -143,7 +143,7 @@ class BaseDataElement:
         Returns:
             (list): All keys in metainfo_fields
         """
-        return list(self.metainfo_fields)
+        return list(self._metainfo_fields)
 
     def values(self)->list:
         """
@@ -399,12 +399,59 @@ class BaseDataElement:
                 _repr+=_addindent(dump(metainfo_items), 4)
                 _repr+="\n\n    DATA FIELDS"
                 items=dict(obj.items())
-                _repr+=_addindent(dum(items), 4)
+                _repr+=_addindent(dump(items), 4)
                 classname=obj.__class__.__name__
                 _repr=f"<{classname}({_repr}\n) at {hex(id(obj))}>"
             else: _repr+=repr(obj)
 
             return _repr
+        # def _addindent(s_: str, num_spaces: int) -> str:
+        #     """This func is modified from `pytorch` https://github.com/pytorch/
+        #     pytorch/blob/b17b2b1cc7b017c3daaeff8cc7ec0f514d42ec37/torch/nn/modu
+        #     les/module.py#L29.
 
-            return dump(self)
+        #     Args:
+        #         s_ (str): The string to add spaces.
+        #         num_spaces (int): The num of space to add.
+
+        #     Returns:
+        #         str: The string after add indent.
+        #     """
+        #     s = s_.split('\n')
+        #     # don't do anything for single-line stuff
+        #     if len(s) == 1:
+        #         return s_
+        #     first = s.pop(0)
+        #     s = [(num_spaces * ' ') + line for line in s]
+        #     s = '\n'.join(s)  # type: ignore
+        #     s = first + '\n' + s  # type: ignore
+        #     return s  # type: ignore
+            
+        # def dump(obj: Any) -> str:
+        #     """Represent the object.
+
+        #     Args:
+        #         obj (Any): The obj to represent.
+
+        #     Returns:
+        #         str: The represented str.
+        #     """
+        #     _repr = ''
+        #     if isinstance(obj, dict):
+        #         for k, v in obj.items():
+        #             _repr += f'\n{k}: {_addindent(dump(v), 4)}'
+        #     elif isinstance(obj, BaseDataElement):
+        #         _repr += '\n\n    META INFORMATION'
+        #         metainfo_items = dict(obj.metainfo_items())
+        #         _repr += _addindent(dump(metainfo_items), 4)
+        #         _repr += '\n\n    DATA FIELDS'
+        #         items = dict(obj.items())
+        #         _repr += _addindent(dump(items), 4)
+        #         classname = obj.__class__.__name__
+        #         _repr = f'<{classname}({_repr}\n) at {hex(id(obj))}>'
+        #     else:
+        #         _repr += repr(obj)
+        #     return _repr
+
+        return dump(self)
         

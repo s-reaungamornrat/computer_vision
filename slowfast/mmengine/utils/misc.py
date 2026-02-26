@@ -1,6 +1,8 @@
 from __future__ import annotations
 from typing import Any, Optional, Sequence, Union, Type
 
+from collections import abc
+
 def is_seq_of(seq:Sequence, expected_type:Union[Type, tuple], seq_type:Optional[Type]=None)->bool:
     """Check whether it is a sequence of some type
     Args:
@@ -31,3 +33,9 @@ def is_list_of(seq, expected_type):
     A partial method of `is_seq_of`
     """
     return is_seq_of(seq, expected_type, seq_type=list)
+
+def is_tuple_of(seq, expected_type):
+    """Check whether it is a tuple of some type
+    A partial method of `is_tuple_of`
+    """
+    return is_seq_of(seq, expected_type, seq_type=tuple)
