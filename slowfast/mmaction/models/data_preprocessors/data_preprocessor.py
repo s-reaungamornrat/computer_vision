@@ -59,6 +59,7 @@ class ActionDataPreprocessor(BaseDataPreprocessor):
             (dict | tuple[dict]): Data in the same format as the model input
         """
         data=self.cast_data(data)
+        print(f"In mmaction.models.data_preprocessors.data_preprocessor.ActionDataPreprocessor.forward {type(data)=}\n{data.keys()}")
         if isinstance(data, dict): return self.forward_onesample(data, training=training)
         elif isinstance(data, (tuple, list)):
             outputs=[]
@@ -75,20 +76,23 @@ class ActionDataPreprocessor(BaseDataPreprocessor):
         Returns:
             (dict): Data in the same format as the model input
         """
-        inputs, data_samples=data['input'], data['data_samples']
+        inputs, data_samples=data['inputs'], data['data_samples']
+        print(f"In mmaction.models.data_preprocessors.data_preprocessor.ActionDataPreprocessor.forward_onesample {[x.shape for x in inputs]=}\n{data_samples}")
         inputs, data_samples=self.preprocess(inputs, data_samples, training)
-        data['input']=input
+        data['inputs']=inputs
         data['data_samples']=data_samples
         return data
 
     def preprocess(self, inputs:list[torch.Tensor], data_samples:SampleList, training:bool=False)->tuple:
         #--- Pad and stack ---
         batch_inputs=stack_batch(inputs)
+        print(f"In mmaction.models.data_preprocessors.data_preprocessor.ActionDataPreprocessor.preprocess {type(batch_inputs)=}, {batch_inputs.shape=}")
         if self.format_shape=='MIX2d3d':
             if batch_inputs.ndim==4: format_shape, view_shape='NCHW', (-1,1,1)
             else:format_shape, view_shape='NCTHW', None
         else: format_shape, view_shape=self.format_shape, None
-            
+        print(f"In mmaction.models.data_preprocessors.data_preprocessor.ActionDataPreprocessor.preprocess {format_shape=}, {view_shape=}")
+        print(f"In mmaction.models.data_preprocessors.data_preprocessor.ActionDataPreprocessor.preprocess {self.to_rgb=}, {self._enable_normalize=}, {self.to_float32=}, {self.blending=}")
         # -----  To RGB -----
         if self.to_rgb:
             if format_shape=='NCHW': batch_inputs=batch_inputs[...,[2,1,0],:,:]
@@ -97,7 +101,9 @@ class ActionDataPreprocessor(BaseDataPreprocessor):
 
         # ---- Normalization ----
         if self._enable_normalize:
-            if view_shape is None: batch_inputs=(batch_inputs-self.mean)/self.std
+            if view_shape is None: 
+                batch_inputs=(batch_inputs-self.mean)/self.std
+                print(f"In mmaction.models.data_preprocessors.data_preprocessor.ActionDataPreprocessor.preprocess normalized batch {type(batch_inputs)=}, {batch_inputs.shape=}")
             else:
                 mean=self.mean.view(view_shape)
                 std=self.std.view(view_shape)

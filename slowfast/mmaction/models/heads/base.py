@@ -5,6 +5,7 @@ from typing import Optional, Callable, List
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from computer_vision.slowfast.mmaction.structures.action_data_sample import ActionDataSample
 from computer_vision.slowfast.mmaction.models.losses.cross_entropy_loss import CrossEntropyLoss
@@ -68,4 +69,53 @@ class BaseHead(nn.Module, metaclass=ABCMeta):
         """
         raise NotImplementedError("Please see https://github.com/open-mmlab/mmaction2/blob/main/mmaction/models/heads/base.py")
         
+
+    def average_clip(self, cls_scores:torch.Tensor, num_segs:int=1)->torch.Tensor:
+        """Averaging class scores over multiple clips
+
+        Using different averaging types ('scores' or 'prob' or None, which defined in test_cfg) to computed the final averaged class score. Only 
+        called in test mode
+
+        Args:
+            cls_scores (torch.Tensor): Class scores to be averaged, with shape (B*num_segs, num_classes)
+            num_segs (int): Number of clips for each input sample
+        Returns:
+            (torch.Tensor): Averaged class scores
+        """
+        assert self.average_clips in ['score', 'prob', None], (f"{self.average_clips} is not supoorted. "
+                                                               f"Currently supported ones are ['score', 'prob', None]")
+        batch_size=cls_scores.shape[0]
+        cls_scores=cls_scores.view((batch_size//num_segs, num_segs)+cls_scores.shape[1:])
+        if self.average_clips is None: return cls_scores
+        elif self.average_clips=='prob': cls_scores=F.softmax(cls_scores, dim=-1).mean(dim=1) # average along num_clips dimension
+        elif self.average_clips=='score': cls_scores=cls_scores.mean(dim=1) # average along num_clips dimension
+        return cls_scores
+
+    def predict(self,feats:Union[torch.Tensor, tuple[torch.Tensor]], data_samples:SampleList, **kwargs)->SampleList:
+        """Perform forward propagation of head and predict recognition results on the features of the upstream network
+        Args:
+            feats (torch.Tensor|tuple[torch.Tensor]): Features from upstream network
+            data_samples (list[ActionDataSample]): The batch data samples
+        Returns:
+            (list[ActionDataSample]): Recognition results wrapped by ActionDataSample
+        """
+        cls_scores=self(feats, **kwargs)
+        return self.predict_by_feat(cls_scores, data_samples)
+
+    def predict_by_feat(self, cls_scores:torch.Tensor, data_samples:SampleList)->SampleList:
+        """Transform a batch of output features extracted from the head into prediction results
         
+        Args:
+            cls_scores (torch.Tensor): Classification scores, has a shape (B*n_clips, num_classes) where n_clips=num_segs is the number of video
+                segments/clips
+            data_samples (list[ActionDataSample]): The annotation data of every samples. It usually includes information such as `gt_label`.
+        Returns:
+            (list[ActionDataSample]): Recognition results wrapped by ActionDataSample
+        """
+        num_segs=cls_scores.shape[0]//len(data_samples)
+        cls_scores=self.average_clip(cls_scores, num_segs=num_segs) # from (B*n_clips, num_classes) to (B,num_classes)
+        pred_labels=cls_scores.argmax(dim=-1, keepdim=True).detach() # (B, 1)
+        for data_sample, score, pred_label in zip(data_samples, cls_scores, pred_labels):
+            data_sample.set_pred_score(score) # (num_classes, )
+            data_sample.set_pred_label(pred_label) # (1,)
+        return data_samples

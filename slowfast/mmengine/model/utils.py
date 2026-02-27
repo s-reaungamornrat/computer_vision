@@ -37,7 +37,7 @@ def stack_batch(tensor_list:list[torch.Tensor], pad_size_divisor:int=1, pad_valu
     max_sizes=torch.ceil(torch.max(all_sizes, dim=0).values/pad_size_divisor)*pad_size_divisor
     
     # padding size for C,T,H,W. In other words, padC, padT, padH, padW
-    padded_sizes=max_size-all_sizes # 2d matrix with padding size for each tensor along each dimension
+    padded_sizes=max_sizes-all_sizes # 2d matrix with padding size for each tensor along each dimension
     # The first dimension normally means channel, which should not be padded
     padded_sizes[:,0]=0
     
