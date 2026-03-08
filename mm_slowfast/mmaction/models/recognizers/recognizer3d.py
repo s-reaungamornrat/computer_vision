@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Iterable, Optional, Union
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 import copy
 import inspect
@@ -28,16 +28,20 @@ class Recognizer3D(nn.Module):
         test_cfg (dict, optional): Config for testing. Default to None
         data_preprocessor (dict, optional): The pre-process config of class `ActionDataPreprocessor`, usually
             including ``mean``, ``std``, and ``format_shape``. Default to None.
+        init_cfg (dict | list[dict], optional): Initialization config dict
     References:
         https://github.com/open-mmlab/mmaction2/blob/main/mmaction/models/recognizers/recognizer3d.py
         https://github.com/open-mmlab/mmaction2/blob/main/mmaction/models/recognizers/base.py
         https://github.com/open-mmlab/mmengine/blob/main/mmengine/model/base_model/base_model.py
     """
     def __init__(self, backbone:dict, cls_head:dict|None=None, train_cfg:dict|None=None, test_cfg:dict|None=None,
-                data_preprocessor:dict|None=None)->None:
+                data_preprocessor:dict|None=None, init_cfg:Union[dict, list[dict],None]=None)->None:
 
         super().__init__()
-
+        
+        self._is_init = False
+        self.init_cfg = copy.deepcopy(init_cfg)
+        
         data_preprocessor.pop('type')
         self.data_preprocessor=ActionDataPreprocessor(**data_preprocessor)
 
@@ -337,3 +341,12 @@ class Recognizer3D(nn.Module):
         if test_mode:
             return self._extract_feat_in_test(inputs, stage, num_crops=num_segs)
         return self._extract_feat_in_train(inputs, stage, data_samples)
+
+    def init_weights(self)->None: 
+        """
+        Reference: https://github.com/open-mmlab/mmengine/blob/main/mmengine/model/base_module.py#L66
+        """
+        if not self._is_init:
+           for m in self.children():
+               if hasattr(m, 'init_weights') and not getattr(m, 'is_init', False): m.init_weights()
+           self._is_init = True

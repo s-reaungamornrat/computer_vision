@@ -12,6 +12,7 @@ from torch.nn.modules.batchnorm import _BatchNorm
 
 from computer_vision.slowfast.mmcv.cnn.bricks.conv_module import ConvModule
 from computer_vision.slowfast.mmcv.cnn.brick import build_activation_layer
+from computer_vision.slowfast.mmengine.model.weight_init import kaiming_init, constant_init
 
 class BasicBlock3d(nn.Module):
     """BasicBlock 3d block for ResNet3D
@@ -490,6 +491,9 @@ class ResNet3d(nn.Module):
                     elif isinstance(m, BasicBlock3d): constant_init(m.conv2.bn, 0)
         else: raise TypeError("pretrained must be str or None")
 
+    def init_weights(self,pretrained:Optional[str]=None)->None:
+        self._init_weights(self, pretrained)
+        
     def forward(self, x:torch.Tensor)->Union[torch.Tensor, tuple[torch.Tensor]]:
         """
         Returns:

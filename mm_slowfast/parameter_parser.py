@@ -4,6 +4,8 @@ from mmengine.config import DictAction
 parser=argparse.ArgumentParser(description='Train an action recognizer')
 parser.add_argument('config', help='train config file path')
 parser.add_argument('--work-dir', help='the directory to sabe logs and models')
+parser.add_argument('--latest', default='latest.pt', help='name of latest checkpoint file')
+parser.add_argument('--best', default='best.pt', help='name of best checkpoint file')
 parser.add_argument('--resume', nargs='?', type=str, const='auto', help='if specify checkpoint path, resume from it, otherwise, specify try to auto resume from the latest checkpoint')
 parser.add_argument('--amp', action='store_true', help='enable automatic mix precision training')
 parser.add_argument('--no-validate', action='store_true', help='whether not to evaluate the checkpoint during training')
@@ -29,7 +31,8 @@ def merge_args(cfg, args):
     for key, val in cfg.items():
         if hasattr(args, key): continue
         setattr(args, key, val)
-            
+    print('cfg.filename')
+    args.filename=cfg.filename
     if args.resume=='auto': 
         args.load_from=None
         args.resume=True
