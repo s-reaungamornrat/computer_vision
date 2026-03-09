@@ -21,6 +21,9 @@ init_distributed_mode, load_checkpoint
 from computer_vision.torch_video.data.dataset import UCF101, ConvertTCHWtoCTHW, DATA_MEAN, DATA_STD, NUM_CLASSES
 from computer_vision.torch_video.data.sampler import RandomClipSampler, UniformClipSampler
 
+from computer_vision.slowfast.model.recognizer3d import Recognizer3D
+from computer_vision.slowfast.model.config import backbone, cls_head
+
 class Trainer:
     def __init__(self,args):
 
@@ -40,29 +43,6 @@ class Trainer:
             val_loader (torch.utils.data.DataLoader): Validation data loader
         """
         
-        # # Data loader
-        # train_dataset=UCF101(root=args.data_path, annotation_path=args.annotation_path, frame_rate=args.frame_rate, 
-        #                      clip_duration=args.clip_duration, step_duration=args.step_duration,
-        #                      train=True, metadata_path=args.metadata_path, fold=args.data_fold, sampling_type='random', use_audio=False,
-        #                      decoder_transforms=[v2.RandomCrop(size=args.train_crop_size),
-        #                                          v2.Resize(args.train_resize_size)],
-        #                      transforms=v2.Compose([
-        #                          v2.RandomHorizontalFlip(p=args.hflip_prob),
-        #                          v2.ToDtype(torch.float32, scale=True),
-        #                          v2.Normalize(mean=DATA_MEAN,std=DATA_STD),
-        #                          ConvertTCHWtoCTHW()])
-        #                     ) 
-        
-        # val_dataset=UCF101(root=args.data_path, annotation_path=args.annotation_path, frame_rate=args.frame_rate, 
-        #                      clip_duration=args.clip_duration, step_duration=args.step_duration,
-        #                      train=False, metadata_path=args.metadata_path, fold=args.data_fold, sampling_type='regular', use_audio=False,
-        #                      decoder_transforms=[v2.CenterCrop(size=args.train_crop_size),
-        #                                          v2.Resize(args.train_resize_size)],
-        #                      transforms=v2.Compose([
-        #                          v2.ToDtype(torch.float32, scale=True),
-        #                          v2.Normalize(mean=DATA_MEAN,std=DATA_STD),
-        #                          ConvertTCHWtoCTHW()])
-        #                     ) 
         # Data loader
         train_dataset=UCF101(root=args.data_path, annotation_path=args.annotation_path, frame_rate=args.frame_rate, 
                              clip_duration=args.clip_duration, step_duration=args.step_duration,
@@ -138,7 +118,7 @@ class Trainer:
         else: self.optimizer=torch.optim.SGD(g[2], lr=lr, momentum=momentum, weight_decay=0., nesterov=True)
         self.optimizer.add_param_group({'params':g[0], 'weight_decay':decay})
         self.optimizer.add_param_group({'params':g[1], 'weight_decay':0.})
-        print(f"'optimizer:' {type(self.optimizer).__name__}(lr={lr}, momentum={momentum}) with parameter groups "
+        print(f"\n'optimizer:' {type(self.optimizer).__name__}(lr={lr}, momentum={momentum}) with parameter groups "
               f"{len(g[1])} weight(weight_decay=0.), {len(g[0])} weight(weight_decay={decay}), {len(g[2])} bias(weight_decay=0.)")
 
     def _setup_scheduler(self):
@@ -160,12 +140,19 @@ class Trainer:
             lr_scheduler (torch.optim)
             scaler (torch.amp.GradScaler)
         """
-        self.model=torchvision.models.get_model(args.model, weights=None)
-        self.model.fc=nn.Linear(in_features=512, out_features=n_classes, bias=True) # modify to the right number of classes
-        initialize_weights(self.model)
-        nn.init.normal_(self.model.fc.weight, mean=0.0, std=0.01) # weights are also initialized to a small Gaussian
-        nn.init.zeros_(self.model.fc.bias)
-        self.model.fc.bias.data=torch.from_numpy(log_probs).to(dtype=self.model.fc.bias.data.dtype, device=self.model.fc.bias.data.device)
+        if args.model=='r2plus1d_18': 
+            self.model=torchvision.models.get_model(args.model, weights=None)
+            self.model.fc=nn.Linear(in_features=512, out_features=n_classes, bias=True) # modify to the right number of classes
+            initialize_weights(self.model)
+            nn.init.normal_(self.model.fc.weight, mean=0.0, std=0.01) # weights are also initialized to a small Gaussian
+            nn.init.zeros_(self.model.fc.bias)
+            self.model.fc.bias.data=torch.from_numpy(log_probs).to(dtype=self.model.fc.bias.data.dtype, device=self.model.fc.bias.data.device)
+        else: 
+            self.model=Recognizer3D(backbone=backbone, cls_head=cls_head)
+            initialize_weights(self.model)
+            nn.init.normal_(self.model.cls_head.fc_cls.weight, mean=0.0, std=0.01) # weights are also initialized to a small Gaussian
+            nn.init.zeros_(self.model.cls_head.fc_cls.bias)
+
         # Below makes the initial softmax output match the dataset distribution before seeing any data.
         # but UCF101 is fairly balanced so gains are negligible; and therefore almost no papers bother
         # priors = class_counts / class_counts.sum()
@@ -249,8 +236,8 @@ class Trainer:
                                                x['initial_lr']*self.lf(epoch)])
                     if 'momentum' in x: x['momentum']=np.interp(ni,xi, [self.args.warmup_momentum, self.args.momentum])
 
-            video=video.float()/255.
-            video=video.permute(0,2,1,3,4).contiguous() 
+            video=video.float()/255. # (B,T,C,H,W)
+            video=video.permute(0,2,1,3,4).contiguous() # (B,C,T,H,W)
             video=video.to(self.device, non_blocking=self.device.type=='cuda')
             target=target.long().to(self.device, non_blocking=self.device.type=='cuda')
             assert video.isfinite().all() and video.abs().sum()>0, f'video is Inf or NaN or blank'

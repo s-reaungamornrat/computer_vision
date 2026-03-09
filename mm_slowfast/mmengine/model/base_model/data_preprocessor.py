@@ -7,9 +7,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from computer_vision.slowfast.mmengine.model.utils import stack_batch
-from computer_vision.slowfast.mmengine.utils.misc import is_seq_of
-from computer_vision.slowfast.mmengine.structures.base_data_element import BaseDataElement
+from computer_vision.mm_slowfast.mmengine.model.utils import stack_batch
+from computer_vision.mm_slowfast.mmengine.utils.misc import is_seq_of
+from computer_vision.mm_slowfast.mmengine.structures.base_data_element import BaseDataElement
 
 CastData=Union[tuple, dict, BaseDataElement, torch.Tensor, list, bytes, str, None]
 

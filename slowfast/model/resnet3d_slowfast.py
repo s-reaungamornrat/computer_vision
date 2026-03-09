@@ -10,8 +10,8 @@ import torch.nn as nn
 from torch.nn.modules.utils import _ntuple, _triple
 
 from .resnet3d import ResNet3d
-from computer_vision.mm_slowfast.mmcv.cnn.bricks.conv_module import ConvModule
-from computer_vision.mm_slowfast.mmengine.model.weight_init import kaiming_init
+from .conv_module import ConvModule
+from .weight_init import kaiming_init
 
 class DeConvModule(nn.Module):
     """A deconv module that bundles deconv/norm/activation layers.
@@ -93,7 +93,7 @@ class ResNet3dPathway(ResNet3d):
                                                 padding=((fusion_kernel-1)//2, 0, 0),
                                                 with_bn=True, with_relu=True)
             else:
-                print(f"conv1_lateral {self.inplanes=}, {self.channel_ratio=}, {(self.inplanes//self.channel_ratio)=}")
+                if self.verbose: print(f"conv1_lateral {self.inplanes=}, {self.channel_ratio=}, {(self.inplanes//self.channel_ratio)=}")
                 self.conv1_lateral=ConvModule(self.inplanes//self.channel_ratio,
                                               self.inplanes*lateral_infl//self.channel_ratio,
                                               kernel_size=(fusion_kernel,1,1),
@@ -107,8 +107,9 @@ class ResNet3dPathway(ResNet3d):
             planes=self.base_channels* 2**i
             self.inplanes=planes*self.block.expansion
 
-            print(f'stage {i}', '-'*20)
-            print(f"{planes=}, {self.inplanes=} {(i!=self.num_stages-1)=}")
+            if self.verbose: 
+                print(f'stage {i}', '-'*20)
+                print(f"{planes=}, {self.inplanes=} {(i!=self.num_stages-1)=}")
             
             if lateral and i!=self.num_stages-1 and self.lateral_activate[i+1]:
                 # no lateral connection needed in final stage
@@ -131,20 +132,20 @@ class ResNet3dPathway(ResNet3d):
                                            act_cfg=self.act_cfg if self.lateral_norm else None)
                 setattr(self, lateral_name, conv_module)
                 self.lateral_connections.append(lateral_name)
-                print(f"{lateral_name=}")
+                if self.verbose: print(f"{lateral_name=}")
                 
     def _calculate_lateral_inplanes(self, kwargs):
         """Calculate inplanes for lateral connection"""
         depth=kwargs.get('depth', 50)
         expansion=1 if depth<50 else 4
         base_channels=kwargs.get('base_channels', 64)
-        print(f"In ResNet3dPathway._calculate_lateral_inplanes: {depth=}, {expansion=}, {base_channels=}")
+        if self.verbose: print(f"In ResNet3dPathway._calculate_lateral_inplanes: {depth=}, {expansion=}, {base_channels=}")
         lateral_inplanes=[]
         for i in range(kwargs.get('num_stages', 4)):
-            print(f'stage {i}', '-'*10)
+            if self.verbose: print(f'stage {i}', '-'*10)
             if expansion%2==0: planes=base_channels*(2**i)*((expansion//2)**(i>0))
             else: planes=base_channels*(2**i) // (2**(i>0))
-            print(f"\t{planes=}, {self.lateral=}, {self.lateral_activate[i]=}, {self.lateral_inv=}")
+            if self.verbose: print(f"\t{planes=}, {self.lateral=}, {self.lateral_activate[i]=}, {self.lateral_inv=}")
             if self.lateral and self.lateral_activate[i]:
                 if self.lateral_inv:
                     lateral_inplane=planes*self.channel_ratio//self.lateral_infl
@@ -317,9 +318,6 @@ class ResNet3dSlowFast(nn.Module):
         if slow_pathway['lateral']:
             slow_pathway['speed_ratio']=speed_ratio
             slow_pathway['channel_ratio']=channel_ratio
-
-        print(f"In resnet3d_slowfast.ResNet3dSlowFast.__init__ {slow_pathway=} ")
-        print(f"In resnet3d_slowfast.ResNet3dSlowFast.__init__ {fast_pathway=} ")
         
         self.slow_path=build_pathway(slow_pathway)
         self.fast_path=build_pathway(fast_pathway)

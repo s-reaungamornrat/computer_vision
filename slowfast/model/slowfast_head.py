@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional, Callable
+from abc import ABCMeta, abstractmethod
+from typing import Optional, Callable, List
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from .base import BaseHead
-from computer_vision.mm_slowfast.mmaction.models.losses.cross_entropy_loss import CrossEntropyLoss
-from computer_vision.mm_slowfast.mmengine.model.weight_init import normal_init
-
-class SlowFastHead(BaseHead):
+class SlowFastHead(nn.Module):
     """The classification head for SlowFast
     Args:
         num_classes (int): Number of classes to classified
@@ -20,10 +18,22 @@ class SlowFastHead(BaseHead):
         init_std (float): Std value for Initiation. Default: 0.01
         kwargs (dict): Any keyword argument to be used to initialize the head
     """
-    def __init__(self, num_classes:int, in_channels:int, loss_cls:Callable=CrossEntropyLoss(loss_weight=1.), spatial_type:str='avg',
-                 dropout_ratio:float=0.8, init_std:float=0.01, **kwargs)->None:
+
+    def __init__(self, num_classes:int, in_channels:int, spatial_type:str='avg', dropout_ratio:float=0.8, init_std:float=0.01, multi_class:bool=False,
+                label_smooth_eps:float=0., topk:Union[int, tuple[int]]=(1,5), average_clips:Optional[dict]=None, init_cfg:Optional[dict]=None)->None:
         
-        super().__init__(num_classes, in_channels, loss_cls, **kwargs)
+        super(SlowFastHead, self).__init__()
+        
+        self.num_classes=num_classes
+        self.in_channels=in_channels
+        self.multi_class=multi_class
+        self.label_smooth_eps=label_smooth_eps
+        self.average_clips=average_clips
+        assert isinstance(topk, (int, tuple)), f"topk must be int or tuple[int] but got {type(topk)}"
+        if isinstance(topk, int): topk=(topk,)
+        assert all(k>0 for k in topk), f"Top-k must be > 0, but got {topk}"
+        self.topk=topk
+
         
         self.spatial_type=spatial_type
         self.dropout_ratio=dropout_ratio
@@ -67,6 +77,27 @@ class SlowFastHead(BaseHead):
         # (N, num_classes)
         cls_score=self.fc_cls(x)
         return cls_score
+
+    def average_clip(self, cls_scores:torch.Tensor, num_segs:int=1)->torch.Tensor:
+        """Averaging class scores over multiple clips
+
+        Using different averaging types ('scores' or 'prob' or None, which defined in test_cfg) to computed the final averaged class score. Only 
+        called in test mode
+
+        Args:
+            cls_scores (torch.Tensor): Class scores to be averaged, with shape (B*num_segs, num_classes)
+            num_segs (int): Number of clips for each input sample
+        Returns:
+            (torch.Tensor): Averaged class scores
+        """
+        assert self.average_clips in ['score', 'prob', None], (f"{self.average_clips} is not supoorted. "
+                                                               f"Currently supported ones are ['score', 'prob', None]")
+        batch_size=cls_scores.shape[0]
+        cls_scores=cls_scores.view((batch_size//num_segs, num_segs)+cls_scores.shape[1:])
+        if self.average_clips is None: return cls_scores
+        elif self.average_clips=='prob': cls_scores=F.softmax(cls_scores, dim=-1).mean(dim=1) # average along num_clips dimension
+        elif self.average_clips=='score': cls_scores=cls_scores.mean(dim=1) # average along num_clips dimension
+        return cls_scores
 
 
 if __name__ == "__main__":

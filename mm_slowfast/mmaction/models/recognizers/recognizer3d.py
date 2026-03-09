@@ -8,16 +8,16 @@ import warnings
 
 import torch.nn as nn
 
-from computer_vision.slowfast.mmaction.models.data_preprocessors.data_preprocessor import ActionDataPreprocessor
-from computer_vision.slowfast.mmaction.models.heads.slowfast_head import SlowFastHead
-from computer_vision.slowfast.mmaction.models.losses.cross_entropy_loss import CrossEntropyLoss
-from computer_vision.slowfast.mmaction.models.backbones.resnet3d_slowfast import ResNet3dSlowFast
-from computer_vision.slowfast.mmengine.model.utils import merge_dict
-from computer_vision.slowfast.mmaction.utils import ForwardResults
-from computer_vision.slowfast.mmengine.optim.optimizer.optimizer_wrapper import OptimWrapper
-from computer_vision.slowfast.mmengine.utils.misc import is_list_of
-from computer_vision.slowfast.mmengine.model.base_model.data_preprocessor import BaseDataPreprocessor
-from computer_vision.slowfast.mmaction.utils import SampleList
+from computer_vision.mm_slowfast.mmaction.models.data_preprocessors.data_preprocessor import ActionDataPreprocessor
+from computer_vision.mm_slowfast.mmaction.models.heads.slowfast_head import SlowFastHead
+from computer_vision.mm_slowfast.mmaction.models.losses.cross_entropy_loss import CrossEntropyLoss
+from computer_vision.mm_slowfast.mmaction.models.backbones.resnet3d_slowfast import ResNet3dSlowFast
+from computer_vision.mm_slowfast.mmengine.model.utils import merge_dict
+from computer_vision.mm_slowfast.mmaction.utils import ForwardResults
+from computer_vision.mm_slowfast.mmengine.optim.optimizer.optimizer_wrapper import OptimWrapper
+from computer_vision.mm_slowfast.mmengine.utils.misc import is_list_of
+from computer_vision.mm_slowfast.mmengine.model.base_model.data_preprocessor import BaseDataPreprocessor
+from computer_vision.mm_slowfast.mmaction.utils import SampleList
 
 class Recognizer3D(nn.Module):
     """Recognizers

@@ -1,7 +1,7 @@
 from typing import List, Dict,Tuple, Union
 import torch
 
-from computer_vision.slowfast.mmaction.structures.action_data_sample import ActionDataSample
+from computer_vision.mm_slowfast.mmaction.structures.action_data_sample import ActionDataSample
 
 SampleList=List[ActionDataSample]
 

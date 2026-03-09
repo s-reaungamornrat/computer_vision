@@ -64,7 +64,8 @@ class VideoClipMetadata:
         self.num_ffmpeg_threads=num_ffmpeg_threads
         self.n_retries=n_retries
         self.video_paths=video_paths
-
+        
+        
         if metadata_path is not None and os.path.isfile(metadata_path): metadata=torch.load(metadata_path, weights_only=False)
         if metadata is None: 
             self._compute_clip_metadata(self.video_paths, clip_length_in_seconds)
@@ -102,7 +103,8 @@ class VideoClipMetadata:
         self.num_frames_per_clip=int(clip_length_in_seconds*self.frame_rate)
         self.num_clips_per_video=[x.numel() if isinstance(x,torch.Tensor) else 0 for x in clip_start_times] # len=len(self.video_paths)
         self.cumulative_sizes=np.cumsum(self.num_clips_per_video) # len=len(self.video_paths)
-
+        # print(f"In torch_video.data.dataset.VideoClipMetadata._compute_clip_metadata num_frames_per_clip {self.num_frames_per_clip}")
+        
     def _initialize_metatdata(self, metadata):
         self.frame_rate=metadata['frame_rate']
         self.video_paths=metadata['video_paths']
@@ -151,6 +153,7 @@ class VideoClipMetadata:
             "cumulative_sizes":cumulative_sizes,
             "invalid_video":[]
         }
+        # print(f"In torch_video.data.dataset.VideoClipMetadata.subset num_frames_per_clip {self.num_frames_per_clip}")
         return type(self)(video_paths=video_paths,clip_length_in_seconds=self.clip_length_in_seconds, clip_stride_in_seconds=self.clip_stride_in_seconds,
                           frame_rate=self.frame_rate, metadata=metadata, sampling_type=self.sampling_type, use_audio=self.use_audio)
         
@@ -316,6 +319,7 @@ class UCF101(VisionDataset):
         self.classes, class_to_idx=find_classes(self.root)
         self.idx_to_class={v:k for k, v in class_to_idx.items()}
         self.samples=make_dataset(self.root, class_to_idx, extension, is_valid_file=None)
+        # print(f"In torch_video.data.dataset.UCF101.__init__ frame_rate {frame_rate}, clip_duration {clip_duration}")
 
         # We bookkeep the full version of video clip metadata because we want to be able to return the metadata of full version rather than the
         # subset version of video clips
@@ -323,6 +327,8 @@ class UCF101(VisionDataset):
         self.full_video_clip_metadata=VideoClipMetadata(video_paths=video_list,clip_length_in_seconds=clip_duration, clip_stride_in_seconds=step_duration,
                                               frame_rate=frame_rate, sampling_type=sampling_type, use_audio=use_audio, metadata_path=metadata_path,
                                               num_ffmpeg_threads=num_ffmpeg_threads)
+        assert self.full_video_clip_metadata.frame_rate==self.frame_rate, ("Frame rate in the metadata does not match required framerate, i.e., "
+                                                                          f"{self.full_video_clip_metadata.frame_rate}!={self.frame_rate}.Please recompute the metadata")
         self.invalid_video=[self.full_video_clip_metadata.video_paths[i] for i in self.full_video_clip_metadata.invalid_video]
         self.indices=self._select_fold(self.full_video_clip_metadata.video_paths, self.invalid_video, 
                                        annotation_path, fold, train)
@@ -381,7 +387,16 @@ class UCF101(VisionDataset):
     def __len__(self)->int: return self.video_clip_metadata.num_clips()
 
     def __getitem__(self, idx:int)->tuple[torch.Tensor, torch.Tensor, dict[str,Any], int]:
-        """Get input video and target label"""
+        """Get input video and target label
+        Returns:
+            (torch.Tensor): Video frames of shape (T,C,H,W) where T is the number of frames, C is the number of channels
+            (torch.Tensor): Audio clip data of type float32 and shape (Channels, Samples), if returns
+            (int): Label
+            (int): Video index
+            (dict[str, Any]): Metadata, e.g., {'video_fps': 16.0,
+                                               'video_path': 'UCF101/UCF-101/ApplyEyeMakeup/v_ApplyEyeMakeup_g01_c01.avi',
+                                               'class': 'ApplyEyeMakeup'} 
+        """
         
         video, audio, info, video_idx=self.video_clip_metadata.get_clip(idx, transforms=self.decoder_transforms)
         label=self.samples[self.indices[video_idx]][1]

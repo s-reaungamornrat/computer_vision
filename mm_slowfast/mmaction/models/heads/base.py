@@ -7,9 +7,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from computer_vision.slowfast.mmaction.structures.action_data_sample import ActionDataSample
-from computer_vision.slowfast.mmaction.models.losses.cross_entropy_loss import CrossEntropyLoss
-from computer_vision.slowfast.mmaction.utils import SampleList
+from computer_vision.mm_slowfast.mmaction.structures.action_data_sample import ActionDataSample
+from computer_vision.mm_slowfast.mmaction.models.losses.cross_entropy_loss import CrossEntropyLoss
+from computer_vision.mm_slowfast.mmaction.utils import SampleList
 
 
 class BaseHead(nn.Module, metaclass=ABCMeta):
@@ -84,11 +84,14 @@ class BaseHead(nn.Module, metaclass=ABCMeta):
         """
         assert self.average_clips in ['score', 'prob', None], (f"{self.average_clips} is not supoorted. "
                                                                f"Currently supported ones are ['score', 'prob', None]")
+        print(f"In mmaction.models.heads.base.average_clip {self.average_clips=} {cls_scores.shape=}")
         batch_size=cls_scores.shape[0]
-        cls_scores=cls_scores.view((batch_size//num_segs, num_segs)+cls_scores.shape[1:])
+        cls_scores=cls_scores.view((batch_size//num_segs, num_segs)+cls_scores.shape[1:]) # (N, n_clips, n_classes) where N is the batch size
+        print(f"In mmaction.models.heads.base.average_clip after reshape {cls_scores.shape=}")
         if self.average_clips is None: return cls_scores
         elif self.average_clips=='prob': cls_scores=F.softmax(cls_scores, dim=-1).mean(dim=1) # average along num_clips dimension
         elif self.average_clips=='score': cls_scores=cls_scores.mean(dim=1) # average along num_clips dimension
+        print(f"In mmaction.models.heads.base.average_clip before return {cls_scores.shape=}")
         return cls_scores
 
     def predict(self,feats:Union[torch.Tensor, tuple[torch.Tensor]], data_samples:SampleList, **kwargs)->SampleList:
@@ -113,8 +116,11 @@ class BaseHead(nn.Module, metaclass=ABCMeta):
             (list[ActionDataSample]): Recognition results wrapped by ActionDataSample
         """
         num_segs=cls_scores.shape[0]//len(data_samples)
+        print(f"In mmaction.models.heads.base.predict_by_feat {num_segs=}, {cls_scores.shape=}")
         cls_scores=self.average_clip(cls_scores, num_segs=num_segs) # from (B*n_clips, num_classes) to (B,num_classes)
+        print(f"In mmaction.models.heads.base.predict_by_feat after calling average_clip {cls_scores.shape=}")
         pred_labels=cls_scores.argmax(dim=-1, keepdim=True).detach() # (B, 1)
+        print(f"In mmaction.models.heads.base.predict_by_feat {pred_labels.shape=}")
         for data_sample, score, pred_label in zip(data_samples, cls_scores, pred_labels):
             data_sample.set_pred_score(score) # (num_classes, )
             data_sample.set_pred_label(pred_label) # (1,)

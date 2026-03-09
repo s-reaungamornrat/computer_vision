@@ -28,7 +28,7 @@ parser.add_argument("--mixup-alpha", default=1., type=float, help="controlling b
 parser.add_argument('--use-cutmix-mixup', action='store_true', help='whether to use cutmix and mixup augmentation')
 
 # Model
-parser.add_argument('--model', type=str, default='r2plus1d_18', help='model name')
+parser.add_argument('--model', type=str, default='r2plus1d_18', choices=['r2plus1d_18', 'slowfast'], help='model name')
 
 # Training
 parser.add_argument('--device', type=str, default='cuda', choices=['cpu','cuda'],help='computing device')

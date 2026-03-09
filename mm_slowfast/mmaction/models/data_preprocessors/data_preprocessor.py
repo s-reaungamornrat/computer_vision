@@ -3,9 +3,9 @@ from typing import Optional, Sequence, Union
 
 import torch
 
-from computer_vision.slowfast.mmengine.model.base_model.data_preprocessor import BaseDataPreprocessor
-from computer_vision.slowfast.mmengine.model.utils import stack_batch
-from computer_vision.slowfast.mmaction.utils import SampleList
+from computer_vision.mm_slowfast.mmengine.model.base_model.data_preprocessor import BaseDataPreprocessor
+from computer_vision.mm_slowfast.mmengine.model.utils import stack_batch
+from computer_vision.mm_slowfast.mmaction.utils import SampleList
 
 class ActionDataPreprocessor(BaseDataPreprocessor):
     """Data pre-processor for action recognition tasks

@@ -8,8 +8,8 @@ import copy
 import torch
 import numpy as np
 
-from computer_vision.slowfast.mmengine.evaluator.metric import BaseMetric
-from computer_vision.slowfast.mmaction.evaluation.functional.accuracy import top_k_accuracy, mean_class_accuracy, mean_average_precision, mmit_mean_average_precision
+from computer_vision.mm_slowfast.mmengine.evaluator.metric import BaseMetric
+from computer_vision.mm_slowfast.mmaction.evaluation.functional.accuracy import top_k_accuracy, mean_class_accuracy, mean_average_precision, mmit_mean_average_precision
 
 def to_tensor(value):
     """Convert value to torch.Tensor"""

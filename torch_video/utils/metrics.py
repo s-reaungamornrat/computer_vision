@@ -1,7 +1,14 @@
 import torch
 
 def accuracy(output, target, topk=(1,)):
-    """Compute the accuracy over the k top predictions for the specified values of k"""
+    """Compute the accuracy over the k top predictions for the specified values of k
+    Args:
+        output (torch.Tensor): Raw logit or class scores after softmax of type float and size (B, n_classes) where B is the batch size
+        target (torch.Tensor): Ground -truth class label of type int64 and size (B,)
+    Returns:
+        (list[torch.Tensor]): List of topk accuracies whose length=`len(topk)`
+    """
+
     with torch.inference_mode():
         maxk=max(topk)
         batch_size=target.size(0)

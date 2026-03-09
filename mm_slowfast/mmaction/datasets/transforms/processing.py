@@ -4,9 +4,9 @@ from typing import Optional, Union
 import numpy as np
 from torch.nn.modules.utils import _pair
 
-from computer_vision.slowfast.mmengine.utils.misc import is_tuple_of
-from computer_vision.slowfast.mmcv.image.photometric import iminvert
-from computer_vision.slowfast.mmcv.image.geometric import rescale_size, imresize, imflip
+from computer_vision.mm_slowfast.mmengine.utils.misc import is_tuple_of
+from computer_vision.mm_slowfast.mmcv.image.photometric import iminvert
+from computer_vision.mm_slowfast.mmcv.image.geometric import rescale_size, imresize, imflip
 
 
 def _init_lazy_of_proper(results, lazy):

@@ -10,9 +10,9 @@ import torch.utils.checkpoint as cp
 from torch.nn.modules.utils import _ntuple, _triple
 from torch.nn.modules.batchnorm import _BatchNorm
 
-from computer_vision.mm_slowfast.mmcv.cnn.bricks.conv_module import ConvModule
-from computer_vision.mm_slowfast.mmcv.cnn.brick import build_activation_layer
-from computer_vision.mm_slowfast.mmengine.model.weight_init import kaiming_init, constant_init
+from .conv_module import ConvModule
+from .brick import build_activation_layer
+from .weight_init import kaiming_init, constant_init
 
 class BasicBlock3d(nn.Module):
     """BasicBlock 3d block for ResNet3D

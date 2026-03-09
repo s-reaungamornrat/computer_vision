@@ -5,9 +5,9 @@ import torch
 
 import numpy as np
 
-from computer_vision.slowfast.mmaction.evaluation.metrics.acc_metric import to_tensor
-from computer_vision.slowfast.mmaction.structures.action_data_sample import ActionDataSample
-from computer_vision.slowfast.mmengine.structures.instance_data import InstanceData
+from computer_vision.mm_slowfast.mmaction.evaluation.metrics.acc_metric import to_tensor
+from computer_vision.mm_slowfast.mmaction.structures.action_data_sample import ActionDataSample
+from computer_vision.mm_slowfast.mmengine.structures.instance_data import InstanceData
 
 class FormatShape:
     """Format final imgs shape to the given input_format

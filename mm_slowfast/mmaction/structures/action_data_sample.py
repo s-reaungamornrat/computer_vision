@@ -5,8 +5,8 @@ from typing import Sequence, Union
 import numpy as np
 import torch
 
-from computer_vision.slowfast.mmengine.structures.base_data_element import BaseDataElement
-from computer_vision.slowfast.mmengine.structures.instance_data import InstanceData
+from computer_vision.mm_slowfast.mmengine.structures.base_data_element import BaseDataElement
+from computer_vision.mm_slowfast.mmengine.structures.instance_data import InstanceData
 
 LABEL_TYPE=Union[torch.Tensor, np.ndarray, Sequence, int]
 SCORE_TYPE=Union[torch.Tensor, np.ndarray, Sequence, dict]

@@ -7,7 +7,7 @@ import torch.nn as nn
 from torch.optim import Optimizer
 
 from .base import BaseOptimWrapper
-from computer_vision.slowfast.mmengine.utils.dl_utils.misc import has_batch_norm
+from computer_vision.mm_slowfast.mmengine.utils.dl_utils.misc import has_batch_norm
 
 class OptimWrapper(BaseOptimWrapper):
     """Optimizer wrapper provides a common interface for updating parameters.

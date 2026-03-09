@@ -7,7 +7,7 @@ from torch import Tensor
 
 import warnings
 
-from computer_vision.slowfast.mmengine.structures.base_data_element import BaseDataElement
+from computer_vision.mm_slowfast.mmengine.structures.base_data_element import BaseDataElement
 
 def _to_cpu(data:Any)->Any:
     """Transfer all tensors and BaseDataElement to cpu"""
