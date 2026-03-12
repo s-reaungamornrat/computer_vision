@@ -266,7 +266,7 @@ def evaluate(model, criterion, data_loader, device, print_freq=None, metric_logg
             output=model(video)
             loss=criterion(output, target)
     
-            # Use softmax to comvert output into prediction probability
+            # Use softmax to convert output into prediction probability
             preds=torch.softmax(output, dim=1)
             for b in range(video.size(0)):
                 idx=video_idx[b].item()

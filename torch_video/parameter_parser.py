@@ -28,7 +28,24 @@ parser.add_argument("--mixup-alpha", default=1., type=float, help="controlling b
 parser.add_argument('--use-cutmix-mixup', action='store_true', help='whether to use cutmix and mixup augmentation')
 
 # Model
-parser.add_argument('--model', type=str, default='r2plus1d_18', choices=['r2plus1d_18', 'slowfast'], help='model name')
+parser.add_argument('--model', type=str, default='r2plus1d_18', choices=['r2plus1d_18', 'slowfast', 'resnet50-lstm'], help='model name')
+parser.add_argument('--pretrained', action="store_true", help='whether to fine tune a pretrained model')
+parser.add_argument('--pretrained-fpath', type=str, default=None, help='path to pretrained model weights. Only needed for slowfast')
+parser.add_argument('--freeze-backbone', action="store_true", help='whether to freeze backbone, currently only work for resnet50-lstm ')
+parser.add_argument(
+    '--mean', 
+    type=float, 
+    nargs=3, 
+    default=[0.485, 0.456, 0.406],
+    help='Mean RGB values for normalization (e.g., --mean 0.485 0.456 0.406) of pretrained model if parameter freezing is used'
+)
+parser.add_argument(
+    '--std', 
+    type=float, 
+    nargs=3, 
+    default=[0.229, 0.224, 0.225],
+    help='Standard deviation of RGB values for normalization (e.g., --std 0.229, 0.224, 0.225) of pretrained model if parameter freezing is used'
+)
 
 # Training
 parser.add_argument('--device', type=str, default='cuda', choices=['cpu','cuda'],help='computing device')

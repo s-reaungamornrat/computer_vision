@@ -23,6 +23,7 @@ from computer_vision.torch_video.data.sampler import RandomClipSampler, UniformC
 
 from computer_vision.slowfast.model.recognizer3d import Recognizer3D
 from computer_vision.slowfast.model.config import backbone, cls_head
+from computer_vision.video_clss_cnnlstm.model.cnnlstm import CNNLSTM
 
 class Trainer:
     def __init__(self,args):
@@ -109,6 +110,7 @@ class Trainer:
         
         for module_name, module in self.model.named_modules():
             for param_name, param in module.named_parameters(recurse=False):
+                if not param.requires_grad: continue # we only interested in parameters that yield gradients
                 full_name=f'{module_name}.{param_name}' if module_name else param_name
                 if 'bias' in full_name: g[2].append(param) # bias so no decay
                 elif isinstance(module, bn): g[1].append(param) # weight not we do not apply decay
@@ -141,18 +143,31 @@ class Trainer:
             scaler (torch.amp.GradScaler)
         """
         if args.model=='r2plus1d_18': 
-            self.model=torchvision.models.get_model(args.model, weights=None)
+            # for pretrained weights, see https://docs.pytorch.org/vision/main/models/generated/torchvision.models.video.r2plus1d_18.html
+            self.model=torchvision.models.get_model("r2plus1d_18", weights="KINETICS400_V1" if args.pretrained else None)
             self.model.fc=nn.Linear(in_features=512, out_features=n_classes, bias=True) # modify to the right number of classes
-            initialize_weights(self.model)
+            if not args.pretrained: initialize_weights(self.model)
             nn.init.normal_(self.model.fc.weight, mean=0.0, std=0.01) # weights are also initialized to a small Gaussian
             nn.init.zeros_(self.model.fc.bias)
             self.model.fc.bias.data=torch.from_numpy(log_probs).to(dtype=self.model.fc.bias.data.dtype, device=self.model.fc.bias.data.device)
-        else: 
+        elif args.model=='slowfast': 
             self.model=Recognizer3D(backbone=backbone, cls_head=cls_head)
             initialize_weights(self.model)
+            if args.pretrained: 
+                assert os.path.isfile(args.pretrained_fpath)
+                checkpoint=torch.load(args.pretrained_fpath, weights_only=False)
+                model.load_state_dict(checkpoint['model'])
             nn.init.normal_(self.model.cls_head.fc_cls.weight, mean=0.0, std=0.01) # weights are also initialized to a small Gaussian
             nn.init.zeros_(self.model.cls_head.fc_cls.bias)
-
+            self.model.cls_head.fc_cls.bias.data=torch.from_numpy(log_probs).to(dtype=self.model.cls_head.fc_cls.bias.data.dtype, device=self.model.cls_head.fc_cls.bias.data.device)
+        elif args.model=='resnet50-lstm':
+            if args.freeze_backbone: warnings.warn(f"Please make sure that the video images were normalized in the similar manner as the pretrained images")
+            self.model=CNNLSTM(num_classes=n_classes, pretrained=args.pretrained, freeze_backbone=args.freeze_backbone)
+            if not args.pretrained: initialize_weights(self.model)
+            nn.init.normal_(self.model.fc.weight, mean=0.0, std=0.01) # weights are also initialized to a small Gaussian
+            nn.init.zeros_(self.model.fc.bias)
+            self.model.fc.bias.data=torch.from_numpy(log_probs).to(dtype=self.model.fc.bias.data.dtype, device=self.model.fc.bias.data.device)
+            
         # Below makes the initial softmax output match the dataset distribution before seeing any data.
         # but UCF101 is fairly balanced so gains are negligible; and therefore almost no papers bother
         # priors = class_counts / class_counts.sum()
@@ -235,9 +250,14 @@ class Trainer:
                     x['lr']=np.interp(ni, xi, [self.args.warmup_bias_lr if (j==0 and x.get("param_group")=='bias') else 0.,
                                                x['initial_lr']*self.lf(epoch)])
                     if 'momentum' in x: x['momentum']=np.interp(ni,xi, [self.args.warmup_momentum, self.args.momentum])
-
             video=video.float()/255. # (B,T,C,H,W)
-            video=video.permute(0,2,1,3,4).contiguous() # (B,C,T,H,W)
+            if self.args.freeze_backbone: 
+                # are first rescaled to [0.0, 1.0] and then normalized using mean=[0.485, 0.456, 0.406] and std=[0.229, 0.224, 0.225].
+                mean=torch.tensor(self.args.mean, dtype=video.dtype, device=video.device)
+                std=torch.tensor(self.args.std, dtype=video.dtype, device=video.device)
+                video=(video-mean[None,None,:,None,None])/std[None,None,:,None,None]
+            if self.args.model!='resnet101-lstm': video=video.permute(0,2,1,3,4).contiguous() # (B,C,T,H,W)
+  
             video=video.to(self.device, non_blocking=self.device.type=='cuda')
             target=target.long().to(self.device, non_blocking=self.device.type=='cuda')
             assert video.isfinite().all() and video.abs().sum()>0, f'video is Inf or NaN or blank'
@@ -310,8 +330,16 @@ class Trainer:
                     print(f"Hit specified number of batches: {b}/{n_batches}! Terminate!!")
                     break
     
-                video=video.float()/255.
-                video=video.permute(0,2,1,3,4).contiguous() # (B,T,C,H,W) to (B,C,T,H,W)
+                # video=video.float()/255.
+                # video=video.permute(0,2,1,3,4).contiguous() # (B,T,C,H,W) to (B,C,T,H,W)
+                video=video.float()/255. # (B,T,C,H,W)
+                if self.args.freeze_backbone: 
+                    # are first rescaled to [0.0, 1.0] and then normalized using mean=[0.485, 0.456, 0.406] and std=[0.229, 0.224, 0.225].
+                    mean=torch.tensor(self.args.mean, dtype=video.dtype, device=video.device)
+                    std=torch.tensor(self.args.std, dtype=video.dtype, device=video.device)
+                    video=(video-mean[None,None,:,None,None])/std[None,None,:,None,None]
+                if self.args.model!='resnet101-lstm': video=video.permute(0,2,1,3,4).contiguous() # (B,C,T,H,W)
+             
                 video=video.to(self.device, non_blocking=self.device.type=='cuda')
                 target=target.long().to(self.device, non_blocking=self.device.type=='cuda')
                 #video=video.to(self.device, non_blocking=self.device.type=='cuda') # (B,C,T,H,W)
