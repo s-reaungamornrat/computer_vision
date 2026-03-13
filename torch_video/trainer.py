@@ -24,6 +24,7 @@ from computer_vision.torch_video.data.sampler import RandomClipSampler, UniformC
 from computer_vision.slowfast.model.recognizer3d import Recognizer3D
 from computer_vision.slowfast.model.config import backbone, cls_head
 from computer_vision.video_clss_cnnlstm.model.cnnlstm import CNNLSTM
+from computer_vision.video_clss_cnntransformers.model.cnntfm import CNNTransformers
 
 class Trainer:
     def __init__(self,args):
@@ -167,7 +168,14 @@ class Trainer:
             nn.init.normal_(self.model.fc.weight, mean=0.0, std=0.01) # weights are also initialized to a small Gaussian
             nn.init.zeros_(self.model.fc.bias)
             self.model.fc.bias.data=torch.from_numpy(log_probs).to(dtype=self.model.fc.bias.data.dtype, device=self.model.fc.bias.data.device)
-            
+        elif args.model=='resnet50-tfm':
+            if args.freeze_backbone: warnings.warn(f"Please make sure that the video images were normalized in the similar manner as the pretrained images")
+            self.model=CNNTransformers(num_classes=n_classes, d_model=512, n_head=8, n_frames=int(args.frame_rate*args.clip_duration), num_layers=3, pretrained=args.pretrained, 
+                                       freeze_backbone=args.freeze_backbone)
+            if not args.pretrained: initialize_weights(self.model)
+            nn.init.normal_(self.model.fc.weight, mean=0.0, std=0.01) # weights are also initialized to a small Gaussian
+            nn.init.zeros_(self.model.fc.bias)
+            self.model.fc.bias.data=torch.from_numpy(log_probs).to(dtype=self.model.fc.bias.data.dtype, device=self.model.fc.bias.data.device)
         # Below makes the initial softmax output match the dataset distribution before seeing any data.
         # but UCF101 is fairly balanced so gains are negligible; and therefore almost no papers bother
         # priors = class_counts / class_counts.sum()
@@ -256,8 +264,7 @@ class Trainer:
                 mean=torch.tensor(self.args.mean, dtype=video.dtype, device=video.device)
                 std=torch.tensor(self.args.std, dtype=video.dtype, device=video.device)
                 video=(video-mean[None,None,:,None,None])/std[None,None,:,None,None]
-            if self.args.model!='resnet101-lstm': video=video.permute(0,2,1,3,4).contiguous() # (B,C,T,H,W)
-  
+            if all(self.args.model!=x for x in ('resnet50-tfm','resnet50-lstm')): video=video.permute(0,2,1,3,4).contiguous() # (B,C,T,H,W)
             video=video.to(self.device, non_blocking=self.device.type=='cuda')
             target=target.long().to(self.device, non_blocking=self.device.type=='cuda')
             assert video.isfinite().all() and video.abs().sum()>0, f'video is Inf or NaN or blank'
@@ -338,7 +345,7 @@ class Trainer:
                     mean=torch.tensor(self.args.mean, dtype=video.dtype, device=video.device)
                     std=torch.tensor(self.args.std, dtype=video.dtype, device=video.device)
                     video=(video-mean[None,None,:,None,None])/std[None,None,:,None,None]
-                if self.args.model!='resnet101-lstm': video=video.permute(0,2,1,3,4).contiguous() # (B,C,T,H,W)
+                if all(self.args.model!=x for x in ('resnet50-tfm','resnet50-lstm')): video=video.permute(0,2,1,3,4).contiguous() # (B,C,T,H,W)
              
                 video=video.to(self.device, non_blocking=self.device.type=='cuda')
                 target=target.long().to(self.device, non_blocking=self.device.type=='cuda')
