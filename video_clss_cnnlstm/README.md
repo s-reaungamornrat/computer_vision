@@ -1,1 +1,1 @@
-https://github.com/pranoyr/cnn-lstm
+https://www.kaggle.com/code/orkatz2/cnn-lstm-pytorch-train

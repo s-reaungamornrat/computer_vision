@@ -14,7 +14,10 @@ class CNNLSTM(nn.Module):
         super(CNNLSTM, self).__init__()
         self.freeze_backbone=freeze_backbone
         # see pretrained weights at https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.resnet50.html
-        self.resnet=torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None)
+        if pretrained: 
+            print('Resnet load pretrained weights')
+            self.resnet=torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V2)
+        else: self.resnet=torchvision.models.resnet50(weights=None)
         if freeze_backbone:
             for param in self.resnet.parameters(): param.requires_grad=False
             assert all(not param.requires_grad for param in self.resnet.parameters())

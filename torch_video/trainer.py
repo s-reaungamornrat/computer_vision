@@ -164,7 +164,7 @@ class Trainer:
         elif args.model=='resnet50-lstm':
             if args.freeze_backbone: warnings.warn(f"Please make sure that the video images were normalized in the similar manner as the pretrained images")
             self.model=CNNLSTM(num_classes=n_classes, pretrained=args.pretrained, freeze_backbone=args.freeze_backbone)
-            if not args.pretrained: initialize_weights(self.model)
+            if not args.pretrained: initialize_weights(self.model); print("initialize model using random functions")
             nn.init.normal_(self.model.fc.weight, mean=0.0, std=0.01) # weights are also initialized to a small Gaussian
             nn.init.zeros_(self.model.fc.bias)
             self.model.fc.bias.data=torch.from_numpy(log_probs).to(dtype=self.model.fc.bias.data.dtype, device=self.model.fc.bias.data.device)
