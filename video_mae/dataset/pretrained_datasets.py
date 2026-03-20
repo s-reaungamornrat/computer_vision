@@ -1,10 +1,48 @@
 import os
 
 import torch
+from torchvision import transforms
+
 import numpy as np
 from PIL import Image
 
 from .loader import get_video_loader, get_image_loader
+from .transforms import GroupMultiScaleCrop, Stack, ToTorchFormatTensor, GroupNormalize
+from .masking_generator import TubeMaskingGenerator, RunningCellMaskingGenerator
+
+class DataAugmentationForVideoMAEv2(object):
+
+    def __init__(self, args, div=True, roll=False, input_mean=[0.485, 0.456, 0.406], input_std=[0.229, 0.224, 0.225], 
+                 scales=[1., .875, .75, .66]):
+        
+        self.input_mean=input_mean
+        self.input_std=input_std
+        normalize=GroupNormalize(self.input_mean, self.input_std)
+        self.train_augmentation=GroupMultiScaleCrop(args.input_size, scales)
+        self.transform=transforms.Compose([self.train_augmentation, Stack(roll=roll), ToTorchFormatTensor(div=div), normalize])
+        if args.mask_type=='tube': self.encoder_mask_map_generator=TubeMaskingGenerator(args.window_size, args.mask_ratio)
+        else: raise NotImplementedError("Unsupported encoder masking strategy type")
+
+        if args.decoder_mask_ratio>0.:
+            if args.decoder_mask_type=='run_cell':
+                self.decoder_mask_map_generator=RunningCellMaskingGenerator(args.window_size, args.decoder_mask_ratio)
+            else: raise NotImplementedError("Unsupported decoder masking strategy type")
+
+    def __call__(self, images):
+        process_data, _=self.transform(images)
+        encoder_mask_map=self.encoder_mask_map_generator()
+        if hasattr(self, 'decoder_mask_map_generator'): decoder_mask_map=self.decoder_mask_map_generator()
+        else: decoder_mask_map=1-encoder_mask_map
+        return process_data, encoder_mask_map, decoder_mask_map
+
+    def __repr__(self):
+        repr="(DataAugmentationForVideoMAEv2,\n"
+        repr+=f" transform={str(self.transform)},\n"
+        repr+=f" Encoder Masking Generator= {str(self.encoder_mask_map_generator)},\n"
+        if hasattr(self, 'decoder_mask_map_generator'): repr+=f" Decoder Masking Generator={self.decoder_mask_map_generator},\n"
+        else: repr+=" Do not use decoder masking,\n"
+        repr+=")"
+        return repr
 
 class HybridVideoMAE(torch.utils.data.Dataset):
     """Load your own videomae pretraining dataset
@@ -149,3 +187,44 @@ class HybridVideoMAE(torch.utils.data.Dataset):
                 frame_id_list.append(frame_id)
                 if offset+self.new_step<duration: offset+=self.new_step
         return frame_id_list
+
+    def __getitem__(self, index):
+        """
+        Returns:
+            (torch.Tensor): Processed video frames of shape (C*T, H, W) where C is the number of channels and T is the number of frames
+            (np.ndarray): Encoder mask of shape (Tg,Hg*Wg) where Tg is the grid dimension along frame dimension, and Hg and Wg is the grid 
+                dimension along height and width. Note Tg=T/Tp, Hg=H/Hp, and Wg=W/Wp where Tp,Hp,Wp is the patch size
+            (np.ndarray): Decoder mask of shape (Tg,Hg*Wg) where Tg is the grid dimension along frame dimension, and Hg and Wg is the grid 
+                dimension along height and width. Note Tg=T/Tp, Hg=H/Hp, and Wg=W/Wp where Tp,Hp,Wp is the patch size
+        """
+        try:
+            video_name, label=self.clips[index]
+            self.skip_length=self.orig_skip_length
+            self.new_step=self.orig_new_step
+            
+            decord_vr=self.video_loader(video_name)
+            duration=len(decord_vr) #number of total frames
+            segment_indices,skip_offsets=self._sample_train_indices(duration)
+            frame_id_list=self.get_frame_id_list(duration, segment_indices, skip_offsets)
+            video_data=decord_vr.get_batch(frame_id_list).asnumpy() # (num_frames, H, W, C) where C is the number of channels
+            images=[Image.fromarray(video_data[vid,]) for vid in range(len(frame_id_list))] # convert each frame to PIL.Image
+        except Exception as e:
+            print(f"Failed to load video from {video_name} with error {e}")
+            index=np.random.randint(0, len(self.clips))
+            return self.__getitem__(index)
+        
+        if self.num_sample>1: # get multiple augmented clips from the same extracted video clip
+            process_data_list, encoder_mask_list, decoder_mask_list=[],[],[]
+            for _ in range(self.num_sample):
+                process_data, encoder_mask, decoder_mask=self.transform((images, None))
+                process_data=process_data.view((self.new_length, 3)+process_data.size()[-2:]).transpose(0,1) # (T,C,H,W)->(C,T,H,W)
+                process_data_list.append(process_data)
+                encoder_mask_list.append(encoder_mask)
+                decoder_mask_list.append(decoder_mask)
+            return process_data_list, encoder_mask_list, decoder_mask_list
+        else:
+            process_data, encoder_mask, decoder_mask=self.transform((images, None))
+            # (T*C,H,W)->(T,C,H,W)->(C,T,H,W)
+            process_data=process_data.view((self.new_length,3)+process_data.size()[-2:]).transpose(0,1)
+            return process_data, encoder_mask, decoder_mask
+            
