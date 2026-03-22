@@ -76,7 +76,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
         x_vis=x[~mask].reshape(B,-1,C) # keep ~mask visible patches (B,vis,embed_dim), where vis the number of patches that is still visible
         
         for i, block in enumerate(self.blocks):
-            if self.with_cp: x_vis=cp.checkpoint(block, x_vis) # (B,vis,embed_dim)
+            if self.with_cp: x_vis=cp.checkpoint(block, x_vis, use_reentrant=False) # (B,vis,embed_dim)
             else: x_vis=block(x_vis) # (B,vis,embed_dim)
         
         x_vis=self.norm(x_vis) # (B,vis,embed_dim)
@@ -152,7 +152,7 @@ class PretrainVisionTransformerDecoder(nn.Module):
                 Otherwise, return all values of raw pixels of all patches (B,num_patches, C), where C is the number of raw pixel values
         """
         for i, block in enumerate(self.blocks):
-            if self.with_cp: x=cp.checkpoint(block, x)
+            if self.with_cp: x=cp.checkpoint(block, x, use_reentrant=False)
             else: x=block(x)
         
         if return_token_num>0:
@@ -185,6 +185,9 @@ class PretrainVisionTransformer(nn.Module):
         self.pos_embed=get_sinusoid_encoding_table(self.encoder.patch_embed.num_patches, decoder_embed_dim)
         trunc_normal_(self.mask_token, std=.02)
 
+    @torch.jit.ignore
+    def no_weight_decay(self): return {'pos_embed', 'cls_token', 'mask_token'}
+        
     def forward(self, x, mask, decode_mask=None):
         """
         Args:
@@ -212,11 +215,49 @@ class PretrainVisionTransformer(nn.Module):
         pos_emb_vis=expand_pos_embed[~mask].reshape(B,-1,C) # (B,N_vis, dec_embed_dim)
         # positional embeddings for patches the decoder is about to predict
         pos_emd_mask=expand_pos_embed[decode_vis].reshape(B,-1,C) # (B, num_patches-N_vis, dec_embed_dim)
-        
         # we note that x_vis,pos_embed are both of size (B,N_vis,dec_embed_dim)
         # self.mask_token (1,1,dec_embed_dim)
+
+
+
         # pos_emd_mask (B, num_patches-N_vis, dec_embed_dim)
         # so cat of (B,N_vis,dec_embed_dim) (B, num_patches-N_vis, dec_embed_dim) give (B, num_patches, dec_embed_dim)
         x_full=torch.cat((x_vis+pos_emb_vis, self.mask_token+pos_emd_mask), dim=1) 
         x=self.decoder(x_full, pos_emd_mask.shape[1])
         return x
+
+
+def pretrain_videomae_tiny_patch16_224(args, pretrained=None, **kwargs):
+    """
+    Args:
+        pretrained (str|Path): Path to model checkpoint with key 'model'
+    Returns:
+        (nn.Module): Model
+    """
+    # tiny settings
+    encoder_embed_dim=192 # 128 ultra-light  --> 192/3=64 dim per head
+    encoder_depth=12 # or 8 for speed or ultra-light
+    encoder_num_heads=3 # 2 ultra-light
+    decoder_embed_dim=128 # 96 ultra-light
+    decoder_depth=args.decoder_depth # 2 ultra-light
+    decoder_num_heads=2
+    mlp_ratio=3. # 2. ultra-light
+    init_values=1e-5 # if the model loss is oscilatting or not decreasing, increase this to 1e-4 to allow more signal through the residual branches
+    
+    patch_size=16
+    tubelet_size=args.tubelet_size
+    decoder_num_classes=3*tubelet_size*(patch_size**2)
+    model=PretrainVisionTransformer(img_size=args.input_size, patch_size=patch_size, encoder_in_chans=3, encoder_num_classes=0, 
+                                    encoder_embed_dim=encoder_embed_dim,  encoder_depth=encoder_depth, encoder_num_heads=encoder_num_heads, 
+                                    decoder_num_classes=decoder_num_classes, decoder_embed_dim=decoder_embed_dim, decoder_depth=decoder_depth, 
+                                    decoder_num_heads=decoder_num_heads, mlp_ratio=mlp_ratio, qkv_bias=True, qk_scale=None, drop_rate=0., attn_drop_rate=0., 
+                                    drop_path_rate=args.drop_path, norm_layer=partial(nn.LayerNorm, eps=1e-6), init_values=1e-5, use_learnable_pos_emb=False, 
+                                    tubelet_size=tubelet_size, with_cp=args.with_checkpoint, all_frames=16, cos_attn=args.cos_attn, attn_head_dim=None, 
+                                    **kwargs)
+    model.default_cfg=_cfg()
+    if pretrained is not None and os.path.isfile(pretrained):
+        checkpoint=torch.load(pretrained, map_location='cpu', weights_only=False)
+        model.load_state_dict(checkpoint['model'])
+
+    return model
+    

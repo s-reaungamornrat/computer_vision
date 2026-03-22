@@ -89,7 +89,7 @@ class Attention(nn.Module):
         if attn_head_dim is not None: head_dim=attn_head_dim
         all_head_dim=head_dim*self.num_heads
         self.scale=qk_scale or head_dim**(-0.5)
-        print(f"{all_head_dim//self.num_heads=}")
+        #print(f"{all_head_dim//self.num_heads=}")
 
         self.qkv=nn.Linear(dim, all_head_dim*3, bias=False)
         self.q_bias=self.v_bias=None
@@ -451,7 +451,7 @@ class VisionTransformer(nn.Module):
         if self.pos_drop is not None: x=self.pos_drop(x)
         
         for i, block in enumerate(self.blocks):
-            if self.with_cp: x=cp.checkpoint(block, x) # (B, sequence_length, embed_dim) 
+            if self.with_cp: x=cp.checkpoint(block, x, use_reentrant=False) # (B, sequence_length, embed_dim) 
             else: x=block(x) # (B, sequence_length, embed_dim) 
         
         # global average pooling: use when the model is designed to look at the entirety of the spatial-temporal information equally

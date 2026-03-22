@@ -6,6 +6,7 @@
 - `pip install scipy scikit-learn`
 - `pip install ipykernel`
 - `pip install timm`
+- `pip install einops`
 
 `>>> huggingface-cli login`
 

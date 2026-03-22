@@ -10,9 +10,13 @@ from .loader import get_video_loader, get_image_loader
 from .transforms import GroupMultiScaleCrop, Stack, ToTorchFormatTensor, GroupNormalize
 from .masking_generator import TubeMaskingGenerator, RunningCellMaskingGenerator
 
+# from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+IMAGENET_DEFAULT_MEAN=(0.485, 0.456, 0.406)
+IMAGENET_DEFAULT_STD=(0.229, 0.224, 0.225)
+
 class DataAugmentationForVideoMAEv2(object):
 
-    def __init__(self, args, div=True, roll=False, input_mean=[0.485, 0.456, 0.406], input_std=[0.229, 0.224, 0.225], 
+    def __init__(self, args, div=True, roll=False, input_mean=IMAGENET_DEFAULT_MEAN, input_std=IMAGENET_DEFAULT_STD, 
                  scales=[1., .875, .75, .66]):
         
         self.input_mean=input_mean
@@ -227,4 +231,5 @@ class HybridVideoMAE(torch.utils.data.Dataset):
             # (T*C,H,W)->(T,C,H,W)->(C,T,H,W)
             process_data=process_data.view((self.new_length,3)+process_data.size()[-2:]).transpose(0,1)
             return process_data, encoder_mask, decoder_mask
-            
+
+    def __len__(self): return len(self.clips)
