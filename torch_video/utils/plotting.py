@@ -73,7 +73,8 @@ def plot_all(file:str, dir:str=None):
         try:
             data=pl.read_csv(f, infer_schema_length=None)
             if i==0:
-                columns=data.columns
+                columns=list(data.columns)
+                if 'epoch' in columns: columns.remove('epoch')
                 half_n_columns=int(np.ceil(len(columns)/2))
                 #print(f"{columns=}, {len(columns)=}, {half_n_columns =}")
                 fig, ax = plt.subplots(2, half_n_columns, figsize=(2*half_n_columns + 2, 6), tight_layout=True)
