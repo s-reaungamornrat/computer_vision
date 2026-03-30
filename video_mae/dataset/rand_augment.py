@@ -298,13 +298,15 @@ class AugmentOp:
         self.magnitude_std=self.hparams.get('magnitude_std', 0)
 
     def __call__(self, img_list):
+        #print(f"In AugmentOp.__call__ {self.name=}")
         if self.prob<1. and random.random()>self.prob: return img_list
         magnitude=self.magnitude
         if self.magnitude_std is not None and self.magnitude_std>0: magnitude=random.gauss(magnitude, self.magnitude_std)
         magnitude=min(_MAX_LEVEL, max(0, magnitude)) # clip to valid range
+        #print(f"{self.level_fn is None=}")
         level_args=self.level_fn(magnitude, self.hparams) if self.level_fn is not None else ()
         
-        print(f"In AugmentOp {self.name=}, {len(img_list)=}, {magnitude=}, {self.magnitude_std=}, {level_args=}, {self.level_fn=}, {self.kwargs=}")
+        #print(f"In AugmentOp {self.name=}, {len(img_list)=}, {magnitude=}, {self.magnitude_std=}, {level_args=}, {self.level_fn=}, {self.kwargs=}", flush=True)
         
         if isinstance(img_list, list):
             return [
@@ -338,7 +340,7 @@ class RandAugment:
         # no replacement when using weighted choice
         ops=np.random.choice(self.ops, self.num_layers, replace=self.choice_weights is None, p=self.choice_weights)
         for op in ops: 
-            print(f"\nIn RandAugment {op.name=}, {np.array(img).shape=}")
+            #print(f"\nIn RandAugment {op.name=}, {np.array(img).shape=}")
             img=op(img)
         return img
 
@@ -382,7 +384,7 @@ def rand_augment_transform(config_str,hparams):
         elif key=='w': weight_idx=int(val)
         else: assert NotImplementedError(f'key {key} is not supported')  
 
-    print(f"In rand_augment_transform {transforms=}, {num_layers=}")
+    #print(f"In rand_augment_transform {transforms=}, {num_layers=}")
     ra_ops=rand_augment_ops(magnitude=magnitude, hparams=hparams, transforms=transforms)
     choice_weights=(None if weight_idx is None else _select_rand_weights(weight_idx))
     return RandAugment(ra_ops, num_layers, choice_weights=choice_weights)

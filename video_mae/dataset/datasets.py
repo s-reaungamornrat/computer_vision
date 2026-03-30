@@ -7,6 +7,7 @@ import torch
 
 from .loader import get_video_loader
 from .pretrained_datasets import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from .video_transforms import random_short_side_scale_jitter, random_crop, random_resized_crop, random_resized_crop_with_shift, horizontal_flip, uniform_crop
 
 class VideoClsDataset(torch.utils.data.Dataset):
     """Load video classification dataset"""
@@ -157,3 +158,67 @@ class VideoClsDataset(torch.utils.data.Dataset):
     def __len__(self):
         if self.mode!='test': return len(self.dataset_samples)
         return len(self.test_dataset)
+
+
+def tensor_normalize(tensor, mean, std):
+    """Normalize a given tensor by subtracting the mean and dividing by std
+    Args:
+        tensor (torch.Tensor): Tensor to be normalized of shape (T,C,...)
+        mean (sequence): Mean of image intensity after normalizing to range [0,1] as a sequence of values for each channel
+        std (sequence): Standard deviation of image intensity after normalizing to range [0,1] as a sequence of values for each channel
+    Return:
+        (torch.Tensor): Tensor after normalizing by mean and std
+    """
+    if tensor.dtype==torch.uint8:
+        tensor=tensor.float()
+        tensor/=255.
+    if isinstance(mean, (list, tuple)): 
+        mean=torch.tensor(mean)
+        shape=(1,len(mean))+(1,)*(tensor.ndim-2)
+        mean=mean.view(*shape)
+    if isinstance(std, (list, tuple)): 
+        std=torch.tensor(std)
+        shape=(1,len(std))+(1,)*(tensor.ndim-2)
+        std=std.view(*shape)
+    
+    tensor=(tensor-mean)/std
+    return tensor
+
+def spatial_sampling(frames, spatial_idx=-1, min_scale=256, max_scale=320, crop_size=224, random_horizontal_flip=True,
+                     inverse_uniform_sampling=False, aspect_ratio=None, scale=None, motion_shift=False):
+    """Perform spatial sampling on the given video frames. If spatial_idx is -1, perform random scale, random crop, and random flip on the given frames.
+    If spatial_idx is 0, 1,or 2, perform spatial uniform sampling with the given spatial_idx
+    Args:
+        frames (tensor): Frames of images sampled from the video. The dimension is (T,C,H,W) where C is the number of image channels and T is the number 
+            of frames
+        spatial_idx (int): If -1, perform random spatial sampling. If 0,1,or 2, perform left, center, right crop of width is larger than height, and
+            perform top, center, buttom crop if height is larger than width
+        min_scale (int): Minimum size of scaling
+        max_scale (int): Maximum size of scaling
+        crop_size (int): Size of height and width used to crop the frames
+        inverse_uniform_sampling (bool): If True, sample uniformly in [1/max_scale, 1/min_scale] and take a reciprocal to get the scale. If False,
+            take a uniform sample from [min_scale, max_scale]
+        aspect_ratio (list): Aspect ratio (width/height) range for resizing 
+        scale (list): Scale range for resizing
+        motion_shift (bool): Whether to apply motion shift for resizing
+    Returns:
+        (torch.Tensor): Spatially sampled frames
+    """
+    
+    assert spatial_idx in [-1,0,1,2]
+    if spatial_idx==-1:
+        if all(x is None for x in [aspect_ratio, scale]):
+            frames,_=random_short_side_scale_jitter(images=frames, min_size=min_scale, max_size=max_scale, boxes=None, 
+                                                    inverse_uniform_sampling=inverse_uniform_sampling)
+            frames,_=random_crop(frames, crop_size) # (T,C,H,W) where H=W=crop_size
+        else:
+            transform_func=random_resized_crop_with_shift if motion_shift else random_resized_crop
+            frames=transform_func(images=frames, target_height=crop_size, target_width=crop_size, scale=scale, ratio=aspect_ratio)
+        if random_horizontal_flip:
+            frames,_=horizontal_flip(0.5, frames)
+    else:
+        # The testing is deterministic and no jitter should be performed. min_scale, max_scale, and crop_size are expected to be the same
+        assert len({min_scale, max_scale, crop_size})==1
+        frames,_=random_short_side_scale_jitter(images=frames, min_size=min_scale, max_size=max_scale)
+        frames,_=uniform_crop(frames, crop_size, spatial_idx)
+    return frames
