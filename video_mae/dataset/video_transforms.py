@@ -11,6 +11,7 @@ from PIL import Image
 from torchvision import transforms
 
 from .rand_augment import rand_augment_transform
+from .functional import resize_clip, crop_clip, normalize
 
 def _pil_interp(method):
     if method=='bicubic': return Image.BICUBIC
@@ -243,3 +244,133 @@ def uniform_crop(images, size, spatial_idx, boxes=None, scale_size=None):
     cropped_boxes=crop_boxes(boxes, x_offset, y_offset) if boxes is not None else None
     if ndim==3: cropped=cropped.squeeze(dim=0)
     return cropped, cropped_boxes
+
+class Compose(object):
+    """Compose several transforms
+    Args:
+        transforms (list[callable]): List of transforms to be composed
+    """
+    def __init__(self, transforms): self.transforms=transforms
+    def __call__(self, clip):
+        for t in self.transforms: clip=t(clip)
+        return clip
+
+class Resize(object):
+    """Resize a list of (H,W,C) np.ndarray to the final size
+
+    The larger the original image us, the more times it takes to inpterpolate
+    Args:
+        interpolation (str): Interpolation method with choices of 'nearest', 'bilinear'. Default to 'nearest'
+        size (tuple[int, int]): Desired size (width, height)
+    """
+    def __init__(self, size, interpolation='nearest'):
+        self.size=size 
+        self.interpolation=interpolation
+        
+    def __call__(self, clip):
+        """
+        The function resizes the clip so that the shortest size matches `size` while maintaining the aspect ratio. It does not change the data type of the clip
+        Args:
+            clip (np.ndarray| list[np.ndarray] | list[PIL.Image.Image]): Video clips of shape (T,H,W,C) where T is the number of frames and C is the number 
+                of channels, or list of (H,W,C) ndarray video frames or list of PIL.Image.Image video frames
+        Returns:
+            (list[np.ndarray] | list[PIL.Image.Image]): List of resized (H,W,C) ndarray video frames or PIL.Image.Image video frames
+        """
+        return resize_clip(clip, self.size, interpolation=self.interpolation)
+
+class CenterCrop(object):
+    """Extract center crop at the same location for a sequence of images
+    Args:
+        size (sequence[int,int] | int): Desired output size (width, height)
+    """
+    def __init__(self, size):
+        self.size=(size,size) if isinstance(size, numbers.Number) else size # (width, height)
+        
+    def __call__(self, clip):
+        """
+        Args:
+            clip (np.ndarray | list[np.ndarray] | list[PIL.Image.Image]): (T,H,W,C) ndarray images or list of (H,W,C) ndarray images or
+                list of PIL.Image.Image
+        Returns: 
+            (list[np.ndarray] | list[PIL.Image.Image]): List of (H,W,C) cropped ndarray images or list of cropped PIL.Image.Image
+        """
+        w, h=self.size
+        if isinstance(clip[0], np.ndarray): im_h, im_w, _=clip[0].shape
+        elif isinstance(clip[0], PIL.Image.Image): im_w, im_h=clip[0].size
+        else: raise TypeError(f"Expected list of np.ndarray or PIL.Image.Image,but got list of {type(clip[0])}")
+            
+        if w>im_w or h>im_h:
+            raise ValueError(f"Initial size must be larger than cropped size, but got cropped size of ({w},{h}) and original size of ({im_w},{im_h})")
+        
+        x0=int(round((im_w-w)/2.))
+        y0=int(round((im_h-h)/2.))
+        
+        return crop_clip(clip, y0,x0,h,w)
+
+class ClipToTensor(object):
+    """Convert a list of m (H,W,C) np.ndarray in the range of [0,255] to a torch.FloatTensor of shape (C,m,H,W) in the range [0.,1.]
+    Args:
+        channel_nb (int): Number of channels
+        div_255 (bool): Whether to divide inputs by 255
+        numpy (bool): Whether to return output as np.ndarray or as torch.Tensor
+    """
+
+    def __init__(self, channel_nb=3, div_255=True, numpy=False):
+        self.channel_nb=channel_nb
+        self.div_255=div_255
+        self.numpy=numpy
+        
+    def __call__(self, clip):
+        """Transform a (T,H,W,C) ndarray or a sequence of (H,W,C) np.ndarray or PIL.Image.Image to its corresponding (C,T,H,W) ndarray or tensor. The output
+        can be scaled to range [0,1] of type float or maintain the range of [0,255] of type unsigned int8
+        
+        Args:
+            clip (list[np.ndarray] | np.ndarray): (T,H,W,C) image or a list of (H,W,C) image ndarray to be converted to tensor
+        Returns:
+            (np.ndarray | torch.Tensor): (C,T,H,W) ndarray or tensor 
+        """
+        assert isinstance(clip[0], np.ndarray) or isinstance(clip[0], Image.Image), ("Clip must be a sequence of np.ndarray or PIL.Image.Image" 
+                                                                                      f" but got {type(clip[0])}")
+        
+        dtype=clip[0].dtype if isinstance(clip[0], np.ndarray) else np.array(clip[0]).dtype
+    
+        if isinstance(clip[0],np.ndarray):
+            h,w,c=clip[0].shape
+            assert c==self.channel_nb
+        elif isinstance(clip[0],Image.Image): w,h=clip[0].size
+        
+        np_clip=np.zeros([self.channel_nb, len(clip), int(h), int(w)], dtype=dtype) # (C,T,H,W)
+        for img_idx, img in enumerate(clip):
+            if isinstance(img, Image.Image): img=np.array(img, copy=False)
+            if img.ndim==3: img=img.transpose(2,0,1) # (H,W,C) to (C,H,W)
+            elif img.ndim==2: img=np.expand_dims(img, 0) # (H,W) to (1,H,W)
+            np_clip[:,img_idx]=img
+        
+        if self.div_255: 
+            if dtype!=np.float32: np_clip=np_clip.astype(np.float32)
+            np_clip/=255.0
+            
+        if self.numpy: return np_clip
+        return torch.from_numpy(np_clip) # (C,T,H,W)
+
+class Normalize(object):
+    """Normalize a clip with mean and standard deviation
+    Args:
+        mean (tuple[float]): Mean intensity value per channel
+        std (tuple[float]): Standard deviation value per channel
+    """
+    def __init__(self, mean, std):
+        self.mean=mean
+        self.std=std
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.Tensor): Tensor of shape (C, T, H, W) to be normalized
+        Returns:
+            (torch.Tensor): Normalized tensor of shape (C, T, H, W)
+        """
+        return normalize(clip, self.mean, self.std)
+
+    def __repr__(self):
+        return self.__class__.__name__ + f"(mean={self.mean}, std={self.std})"

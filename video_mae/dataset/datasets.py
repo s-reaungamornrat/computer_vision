@@ -4,15 +4,18 @@ import warnings
 import numpy as np
 
 import torch
+from torchvision import transforms
 
 from .loader import get_video_loader
 from .pretrained_datasets import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from .video_transforms import random_short_side_scale_jitter, random_crop, random_resized_crop, random_resized_crop_with_shift, horizontal_flip, uniform_crop
+from .video_transforms import (random_short_side_scale_jitter, random_crop, random_resized_crop, random_resized_crop_with_shift, horizontal_flip, 
+                               uniform_crop, create_random_augment, Compose, Resize, CenterCrop, ClipToTensor, Normalize)
+from .random_erasing import RandomErasing
 
 class VideoClsDataset(torch.utils.data.Dataset):
     """Load video classification dataset"""
-    def __init__(self, anno_path, data_root='', mode='train', clip_len=8, frame_sample_rate=2, crop_size=224, short_side_size=256, new_height=256, new_width=340,
-                 keep_aspect_ratio=True, num_segment=1, num_crop=1, test_num_segment=10, test_num_crop=3, sparse_sample=False,args=None):
+    def __init__(self, anno_path, data_root='', mode='train', clip_len=8, frame_sample_rate=2, crop_size=224, short_side_size=256, new_height=256, 
+                 new_width=340, keep_aspect_ratio=True, num_segment=1, num_crop=1, test_num_segment=10, test_num_crop=3, sparse_sample=False,args=None):
         self.anno_path=anno_path
         self.data_root=data_root
         self.mode=mode
@@ -41,9 +44,24 @@ class VideoClsDataset(torch.utils.data.Dataset):
         self.dataset_samples, self.label_array=self._make_dataset(root=data_root, anno_path=anno_path)
 
         if mode=='validation':
-            raise NotImplementedError('Implememt me, see https://github.com/OpenGVLab/VideoMAEv2/blob/master/dataset/datasets.py#L16')
+            self.data_transform=Compose([Resize(self.short_side_size, interpolation='bilinear'),
+                                         CenterCrop(size=(self.crop_size, self.crop_size)),
+                                         ClipToTensor(),
+                                         Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)])
         elif mode=='test':
-            raise NotImplementedError('Implememt me, see https://github.com/OpenGVLab/VideoMAEv2/blob/master/dataset/datasets.py#L16')
+            self.data_resize=Resize(size=self.short_side_size,interpolation='bilinear')
+            self.data_transfrom=Compose([ClipToTensor(), Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)])
+            # prepare for multi-view inference or ensemble testing
+            self.test_seg,self.test_dataset,self.test_label_array=[],[],[]
+            for ck in range(self.test_num_segment): # temporal segments: different time windows or clips sampled from the video
+                for cp in range(self.test_num_crop): # spatial crops: different spatial view (e.g., left-crop, center-crop, right-crop, or flips)
+                    for idx in range(len(self.label_array)): # dataset samples: original list of video paths and their labels
+                        sample_label=self.label_array[idx]
+                        # below has the size of cartesian product of (segments x crops x total_videos), __getitem__ can iterate through them as unique indices
+                        self.test_label_array.append(sample_label)
+                        self.test_dataset.append(self.dataset_samples[idx])
+                        # instruction manual storing `segment index` (ck) and `crop index` (cp)
+                        self.test_seg.append((ck, cp)) 
             
     def _make_dataset(self, root, anno_path):
         """
@@ -159,6 +177,176 @@ class VideoClsDataset(torch.utils.data.Dataset):
         if self.mode!='test': return len(self.dataset_samples)
         return len(self.test_dataset)
 
+    def _aug_frame(self, buffer, args):
+        """Augment video frames and reshape/crop so their shape match desired input size (`crop_size`)
+        Args:
+            buffer (np.ndarray): Video frames of shape (T,H,W,C) of type np.uint8 where T is the number of frames and C is the number of channels
+        Returns:
+            (torch.Tensor): Transformed video frames of shape (C,T,H,W) of type torch.float32
+        """
+        buffer=[transforms.ToPILImage()(frame) for frame in buffer] # list of (H,W,C)
+        
+        aug_transform=create_random_augment(input_size=(self.crop_size, self.crop_size),
+                                            auto_augment=args.aa, interpolation=args.train_interpolation)
+        buffer=aug_transform(buffer) # PIL.Image with image.size (W,H) and np.array(x).shape of (H,W,d)
+        buffer=[transforms.ToTensor()(img) for img in buffer]
+        buffer=torch.stack(buffer) # (T,C,H,W)
+        
+        buffer=tensor_normalize(buffer, mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD) # (T,C,H,W)
+        
+        # Perform data augmentation
+        scale, aspect_ratio=([0.08,1.0],[0.75,1.3333])
+        buffer=spatial_sampling(buffer, spatial_idx=-1, min_scale=256, max_scale=320, crop_size=self.crop_size, 
+                                random_horizontal_flip=True, inverse_uniform_sampling=False, aspect_ratio=aspect_ratio, 
+                                scale=scale, motion_shift=False)
+        
+        if self.rand_erase:
+            erase_transform=RandomErasing(args.reprob, mode=args.remode, max_count=args.recount, num_splits=args.recount, device='cpu')
+            buffer=erase_transform(buffer) # (T,C,H,W)
+            buffer=buffer.permute(1,0,2,3).contiguous() # (C,T,H,W)
+        return buffer
+
+    
+    def _get_train_item(self, index, args, scale_t=1):
+        """Get training item
+        Args:
+            index (int): Index of item to get
+            args (Namespace): Input arguments
+            scale_t (int): Secondary temporal stride to further sampling frames
+        Returns:
+            (list[torch.Tensor] | torch.Tensor): List of (C,T,H,W) video frames or (C,T,H,W) video frames
+            (list[int] | int): List of labels or label
+            (list[int] | int): List of index or index
+            (set): ???
+        """ 
+
+        sample=self.dataset_samples[index] # video filepath
+        # (T,H,W,C)
+        buffer=self.load_video(sample, sample_rate_scale=scale_t) # read video 
+        if len(buffer)==0:
+            while len(buffer)==0:
+                warnings.warn(f"Video {sample} was not loaded correctly during training")
+                index=np.random.randint(len(self))
+                sample=self.dataset_samples[index]
+                buffer=self.load_video(sample, sample_rate_scale=scale_t)
+                
+        if args.num_sample>1:
+            frame_list, label_list,index_list=[],[],[]
+            for _ in range(args.num_sample):
+                new_frames=self._aug_frame(buffer, args)
+                label=self.label_array[index]
+                frame_list.append(new_frames)
+                label_list.append(label)
+                index_list.append(index)
+            return frame_list, label_list, index_list, {}
+            
+        buffer=self._aug_frame(buffer, args)
+        return buffer, self.label_array[index], index, {}  
+
+    def _get_val_item(self, index):
+        """Get validation item
+        Args:
+            index (int): Index of item to get
+        Returns:
+            (torch.Tensor): (C,T,H,W) video frames
+            (int): Label
+            (str): Name of video file
+        """ 
+        sample=self.dataset_samples[index]
+        buffer=self.load_video(sample)
+        if len(buffer)==0:
+            while len(buffer)==0:
+                warnings.warn(f"video {sample} not correctly loaded during validation")
+                index=np.random.randint(self.__len__())
+                sample=self.dataset_samples[index]
+                buffer=self.load_video(sample)
+        buffer=self.data_transform(buffer)
+        return buffer, self.label_array[index], os.path.splitext(os.path.basename(sample))[0]
+
+    def _get_test_item(self,index):
+        """Get test item
+        Args:
+            index (int): Index of item to get
+        Returns:
+            (torch.Tensor): (C,T,H,W) video frames
+            (int): Label
+            (str): Name of video file
+            (int): Temporal sample index
+            (int): Spatial crop index
+        """ 
+        sample=self.test_dataset[index]
+        chunk_nb,split_nb=self.test_seg[index] # temporal segment index, and spatial crop index
+        buffer=self.load_video(sample)
+        
+        while len(buffer)==0:
+            warnings.warn(f"video {self.test_dataset[index]}, temporal {chunk_nb}, spatial {split_nb} not found during testing")
+            index=np.random.randint(self.__len__())
+            sample=self.test_dataset[index]
+            chunk_nb, split_nb=self.test_seg[index]
+            buffer=self.load_video(sample)
+        
+        buffer=self.data_resize(buffer) # list of (H,W,C) np.ndarray of type uint8
+        if isinstance(buffer, list): buffer=np.stack(buffer, 0) # (T,H,W,C)
+
+        # Below we perform temporal and spatial sample
+        
+        # Calculate a stride (step size) to evenly distribute a specific number of crops across the longer dimension
+        # self.short_side_size is the target crop size (e.g., 224 pixel)
+        # spatial_step: distance between the starting coordinates of each consecutive crop
+        # example: A video of 324 pixels wide and target crop of 224 pixels, using 3 crop
+        # - excess space: 324-224=100 pixels
+        # - intervals: 3-1=2
+        # - spatial_step= 100/2=50
+        # crops would start at horizontal offsets of 0 (left), 50 (center), 100 (right-- 100+224=324 which is the edge)
+        spatial_step=1.*(max(buffer.shape[1:3])-self.short_side_size)/(self.test_num_crop-1)
+        spatial_start=int(split_nb*spatial_step) # split_nb: index of spatial crops
+        if self.sparse_sample: # sparse in time
+            # chunk_nb ranging from [0, self.test_num_segment-1]
+            # the following allow us to sample every self.test_num_segment frame
+            # Example: a video with 16 frames, self.test_num_segment=4, we have
+            # chunk_nb     slice syntax       frames selected
+            # 0             0::4              0,4,8,12
+            # 1             1::4              1,5,9,13
+            # 2             2::4              2,6,10,14
+            # 3             3::4              3,7,11,15
+            temporal_start=chunk_nb # chunk_nb:index of temporal segment sampled , temporal_start: index to frame the video reader should start decoding from
+            if buffer.shape[1]>=buffer.shape[2]: # if H>=W
+                buffer=buffer[temporal_start::self.test_num_segment, # sample T from temporal_start with the step of dataset_test.test_num_segment
+                              spatial_start:spatial_start+self.short_side_size] # sample along H dimension
+            else:
+                buffer=buffer[temporal_start::self.test_num_segment,:,
+                              spatial_start:spatial_start+self.short_side_size]
+        else:
+            temporal_step=max(1.*(buffer.shape[0]-self.clip_len)/(self.test_num_segment-1), 0)
+            temporal_start=int(chunk_nb*temporal_step)
+            if buffer.shape[1]>=buffer.shape[2]: # if H>=W
+                buffer=buffer[temporal_start:temporal_start+self.clip_len, 
+                              spatial_start:spatial_start+self.short_side_size]
+            else:
+                buffer=buffer[temporal_start:temporal_start+self.clip_len,:,
+                              spatial_start:spatial_start+self.short_side_size]
+        
+        # After the above operation, buffer will be (T,H,W,C) np.ndarray where H and W will be at target desired size
+        buffer=self.data_transfrom(buffer) # (C,T,H,W) float32 tensor after [0,1] followed ImageNet normalization
+        return buffer, self.test_label_array[index], os.path.splitext(os.path.basename(sample))[0], chunk_nb, split_nb
+
+    def __getitem__(self, index):
+        """Get item. See `_get_train_item`, `_get_val_item`, and `_get_test_item` for docstring of each mode
+        Args:
+            index (int): Index of item to get
+        """
+        if self.mode=='train': 
+            # outputs = frames_list, label_list, index_list, some_set
+            outputs=self._get_train_item(index=index, args=self.args,  scale_t=1)
+        elif self.mode=='validation': 
+            # outputs = frames, label, fname
+            outputs=self._get_val_item(index=index)
+        elif self.mode=='test': 
+            # outputs= frames, label, fname, chunk_nb, split_nb
+            outputs=self._get_test_item(index=index)
+        else: raise ValueError(f"mode {self.mode} is not supported, must be 'test', 'validation', 'train'")
+
+        return outputs
 
 def tensor_normalize(tensor, mean, std):
     """Normalize a given tensor by subtracting the mean and dividing by std
