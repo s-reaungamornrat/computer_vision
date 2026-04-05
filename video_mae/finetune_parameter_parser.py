@@ -14,6 +14,7 @@ parser.add_argument('--time', default=None, type=float, help='hours to train the
 # model parameters
 parser.add_argument('--model', default='vit_base_patch16_224', type=str, metavar='MODEL', help='Name of model to train')
 parser.add_argument('--tubelet_size', default=2, type=int)
+parser.add_argument('--cos_attn', action='store_true', default=False)
 parser.add_argument('--input_size', default=224, type=int, help='input image size')
 parser.add_argument('--with_checkpoint', action='store_true', default=False)
 parser.add_argument('--drop', type=float, default=0., metavar='PCT', help='Dropout rate (default:0.)')
@@ -69,6 +70,7 @@ parser.add_argument('--cutmix_minmax', type=float, nargs='+', default=None, help
 parser.add_argument('--mixup_prob', type=float, default=1., help='probability of switching to cutmix when both mixup and cutmix enabled')
 parser.add_argument('--mixup_mode', type=str, default='batch',  choices=['batch', 'pair', 'elem'], 
                     help='how to apply mixup/cutmix parameters.')
+parser.add_argument('--mixup_switch_prob', type=float, default=0.5, help='Probability of switching to cutmix when both mixup and cutmix enabled')
 
 # finetuning parameters
 parser.add_argument('--finetune', default='', help='finetune from checkpoint')
@@ -101,6 +103,8 @@ parser.add_argument('--resume', action='store_true')
 parser.add_argument('--auto_resume', action='store_true')
 parser.add_argument('--no_auto_resume', action='store_false', dest='auto_resume')
 parser.set_defaults(auto_resume=True)
+parser.add_argument('--last', default='last.pth', type=str, help='name of latest checkpoint file')
+parser.add_argument('--best', default='best.pth', type=str, help='name of best checkpoint file')
 parser.add_argument('--start_epoch', default=0, type=int, metavar='N', help='start epoch')
 parser.add_argument('--eval', action='store_true', help='perform evaluation only')
 parser.add_argument('--validation', action='store_true', help='perform validation only')

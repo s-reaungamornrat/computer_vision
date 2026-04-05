@@ -8,7 +8,13 @@ from collections import defaultdict, deque
 import torch
 import numpy as np
 from torch.utils.data._utils.collate import default_collate
+import torch.distributed as dist
 
+def is_dist_avail_and_initialized(): return dist.is_available() and dist.is_initialized()
+
+def get_world_size():
+    return 1 if not is_dist_avail_and_initialized() else dist.get_world_size()
+    
 def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epochs=0, start_warmup_value=0, warmup_steps=-1):
     """
     Construct cosine schedule for learninging rate and weight decay
@@ -45,7 +51,26 @@ def seed_worker(worker_id: int) -> None:
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
-
+def multiple_samples_collate(batch, fold=False):
+    """Collate function for repeated augmentation. Each instance in the batch has more than one sample
+    Args:
+        batch (tuple | list): Data batch to collate
+    Returns:
+        (tuple): Collated data batch
+    """
+    inputs, labels, video_idx, extra_data=zip(*batch)
+    inputs=[item for sublist in inputs for item in sublist] # convert list[list[(C,T,H,W) tensors]] to list[(C,T,H,W) tensors]
+    labels=[item for sublist in labels for item in sublist]
+    video_idx=[item for sublist in video_idx for item in sublist]
+    inputs, labels, video_idx, extra_data=(
+        default_collate(inputs),
+        default_collate(labels),
+        default_collate(video_idx),
+        default_collate(extra_data),
+    )
+    if fold: return [inputs], labels, video_idx, extra_data
+    return inputs, labels, video_idx, extra_data
+    
 def multiple_pretrain_samples_collate(batch, fold=False):
     """Collate function for repeated augmentation. Each instance in the batch has more than one sample
     Args:
@@ -213,3 +238,47 @@ def form_stats(metric_logger, mode='train'):
         stats[k]=v
     return stats
 
+def load_state_dict(model, state_dict, prefix='', ignore_missing='relative_position_index', verbose=False):
+    """Load state dict to model
+    Args:
+        model (nn.Module): Model
+        state_dict (collections.OrderedDict): Pretrained weights
+        prefix (str): Prefix of parameter names, often indicates parameter levels in the model parameter tree
+        verbose (bool): Whether to print detailed unexpected keys
+    """
+    missing_keys, unexpected_keys, error_msgs=[],[],[]
+    metadata=getattr(state_dict, '_metadata', None)
+    state_dict=state_dict.copy() # copy state_dict so _load_from_state_dict can modify it
+    if metadata is not None: state_dict._metadata=metadata
+    
+    def load(module, prefix=''):
+        """"Recursively mapp the weights from a flat state_dict onto the hierarchical structure of nn.Module, or bridge the model tree structure and
+        the dictionary of weights"""
+        # extract `local_metadata` specific to the current module level (using `prefix`)
+        local_metadata={} if metadata is None else metadata.get(prefix[:-1], {})
+        # torch built-in function https://github.com/pytorch/pytorch/blob/4a8f5e752beb5a6809ba866c83f32dd464a47bfd/torch/nn/modules/module.py#L2333
+        # weight injection: `module._load_from_state_dict` looks into the `state_dict`, finds keys that start with the current `prefix`, and copies
+        # those tensors into the module's parameters (i.e., weights and biases)
+        # missing_keys, unexpected_keys, error_msgs help debug and check whether the checkpoint match the model architecture
+        module._load_from_state_dict(state_dict=state_dict, prefix=prefix, local_metadata=local_metadata, strict=True, missing_keys=missing_keys, 
+                                     unexpected_keys=unexpected_keys, error_msgs=error_msgs) 
+        for name, child in module._modules.items():
+            # call `load` recursively on each child since parameter values will be set only `prefix` matches model parameter names, for example
+            # `blocks.0.attn.qkv.weight`
+            if child is not None: load(child, prefix+name+".") # for each child calculate a new prefix
+    
+    load(model, prefix=prefix)
+    
+    warn_missing_keys, ignore_missing_keys=[],[]
+    for key in missing_keys:
+        keep_flag=True
+        for ignore_key in ignore_missing.split('|'):
+            if ignore_key in key: keep_flag=False; break
+        if keep_flag: warn_missing_keys.append(key)
+        else: ignore_missing_keys.append(key)
+    
+    missing_keys=warn_missing_keys
+    if len(missing_keys)>0: print(f"\nWeights of {model.__class__.__name__} not initialized from pretrained model: {missing_keys}")
+    if len(unexpected_keys)>0 and verbose: print(f"\nWeights from pretrained model not used in {model.__class__.__name__}: {unexpected_keys}")
+    if len(ignore_missing_keys)>0: print(f"\nIgnored weights of {model.__class__.__name__} not initialized from pretrained model: {ignore_missing_keys}")
+    if len(error_msgs)>0: print('\n'.join(error_msgs))

@@ -8,7 +8,7 @@ import torch.utils.checkpoint as cp
 from torch.nn.modules.utils import _pair
 
 def _cfg(url='', **kwargs):
-    return {'url':url, 'num_classes':400, 'input_size':(3,224,224), 'pool_size':None, 'crop_pct':.9, 'interpolation':'bicubic', 'mean':(0.5,.5,.5),
+    return {'url':url, 'num_classes':101, 'input_size':(3,224,224), 'pool_size':None, 'crop_pct':.9, 'interpolation':'bicubic', 'mean':(0.5,.5,.5),
            'std':(.5,.5,.5), **kwargs}
 
 def drop_path(x, drop_prob:float=0., training:bool=False, scale_by_keep:bool=True):
@@ -476,4 +476,17 @@ class VisionTransformer(nn.Module):
         if self.head_dropout is not None: x=self.head_dropout(x) 
         x=self.head(x)
         return x
-        
+
+
+def vit_tiny_patch16_224(pretrained=False, **kwargs):
+    
+    patch_size=16
+    encoder_embed_dim=192 # 128 ultra-light  --> 192/3=64 dim per head
+    encoder_depth=12 # or 8 for speed or ultra-light
+    encoder_num_heads=3 # 2 ultra-light
+    mlp_ratio=3. # 2. ultra-light
+    model=VisionTransformer(patch_size=patch_size, embed_dim=encoder_embed_dim, depth=encoder_depth, num_heads=encoder_num_heads,
+                            mlp_ratio=mlp_ratio, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), init_values=1e-5, **kwargs)
+    model.default_cfg=_cfg()
+    return model
+

@@ -1,6 +1,7 @@
 import json
 import torch
 
+    
 def get_parameter_groups(model, weight_decay=1e-5, skip_list=(), get_num_layer=None, get_layer_scale=None):
     """Divide parameters into a set with weight_decay imposed and a set without. The set that will not have weight decay includes those
     that are 1D parameters, bias, scale and those in skip_list
@@ -70,7 +71,7 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
     weight_decay=args.weight_decay
     if weight_decay and filter_bias_and_bn:
         skip=set()
-        if skip_list is not None: skip|={skip_list}
+        if skip_list is not None: skip|=({skip_list} if not isinstance(skip_list, set) else skip_list)
         if hasattr(model, 'no_weight_decay'): skip|=model.no_weight_decay()
         parameters=get_parameter_groups(model, weight_decay, skip, get_num_layer, get_layer_scale)
         weight_decay=0.
@@ -94,7 +95,7 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
     else: raise ValueError(f"{args.opt} is not supported")
     return optimizer
 
-def get_num_layer_vit(param_name, num_max_layer):
+def get_num_layer_for_vit(param_name, num_max_layer):
     """Part of Layer-wise Learning Rate Decay (LLRD), assigning a layer ID to a parameter name. 
     Note this code is written by Google Gemini"""
     if param_name in ('cls_token', 'mask_token', 'pos_embed'): return 0
@@ -106,16 +107,37 @@ def get_num_layer_vit(param_name, num_max_layer):
         # The head or global norm gets the highest index
         return num_max_layer-1
 
-class LayerDecayValueAssigner:
-    """Part of Layer-wise Learning Rate Decay (LLRD), to compute scale applied to learning rate per parameter/layer.  
-    Note this code is written by Google Gemini"""
-    def __init__(self, decay_rate, num_layers):
-        self.decay_rate=decay_rate # e.g., 0.75
-        self.num_layers=num_layers
-    def get_layer_scale(self, layer_id):
-        """ Compute decay factor/scale that used to scale learning rate so that the learning rate decreases as we go towards the input. In other words,
-        the factor starts from 1.0 for the last layer and decreases as we move toward the input
+# def get_num_layer_for_vit(var_name, num_max_layer):
+#     if var_name in ('cls_token', 'mask_token', 'pos_embed'): return 0
+#     elif var_name.startswith('patch_embed'): return 0
+#     elif var_name.startswith('rel_pos_bias'): return num_max_layer-1
+#     elif var_name.startswith('blocks'): 
+#         layer_id=int(var_name.split('.')[1])
+#         return layer_id+1
+#     return num_max_layer-1
+        
+class LayerDecayValueAssigner(object):
+    """Part of Layer-wise Learning Rate Decay (LLRD), to compute scale applied to learning rate per parameter/layer. 
+    
+    Return decay factor/scale that used to scale learning rate/weight decay so that the learning rate/weight decay decreases as we go towards the input. 
+    In other words, the factor starts from 1.0 for the last layer and decreases as we move toward the input
             lr_layer=lr_base * factor where factor=`decay_rate`**(num_layer-layer-1)
-        """
-        return self.decay_rate**(self.num_layers-1-layer_id)
+    """
+    def __init__(self,values): self.values=values
+    def get_scale(self, layer_id): return self.values[layer_id]
+    def get_layer_id(self, var_name):
+        return get_num_layer_for_vit(var_name, len(self.values))
+
+# class LayerDecayValueAssigner:
+#     """Part of Layer-wise Learning Rate Decay (LLRD), to compute scale applied to learning rate per parameter/layer.  
+#     Note this code is written by Google Gemini"""
+#     def __init__(self, decay_rate, num_layers):
+#         self.decay_rate=decay_rate # e.g., 0.75
+#         self.num_layers=num_layers
+#     def get_layer_scale(self, layer_id):
+#         """ Compute decay factor/scale that used to scale learning rate so that the learning rate decreases as we go towards the input. In other words,
+#         the factor starts from 1.0 for the last layer and decreases as we move toward the input
+#             lr_layer=lr_base * factor where factor=`decay_rate`**(num_layer-layer-1)
+#         """
+#         return self.decay_rate**(self.num_layers-1-layer_id)
         

@@ -84,7 +84,8 @@ class VideoClsDataset(torch.utils.data.Dataset):
             # video path label
             dataset_samples.append( os.path.join(root, line_info[0]) if root is not None else line_info[0] )
             assert os.path.isfile(dataset_samples[-1]), f"{dataset_samples[-1]} does not exist"
-            label_array.append( int(line_info[1]) )
+             # note label was count from 1 so we subtract 1 to start from 0
+            label_array.append( int(line_info[1])-1 )
         assert len(dataset_samples)==len(label_array)
         return dataset_samples, label_array
 
