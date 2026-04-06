@@ -126,7 +126,7 @@ def _get_param_spatial_crop(scale, ratio, height, width, num_repeat=10, log_scal
         w=int(round(math.sqrt(target_area*aspect_ratio))) # aspect_ratio is w/h
         h=int(round(math.sqrt(target_area/aspect_ratio)))
         if np.random.uniform()<0.5 and switch_hw: w,h=h,w
-        if 0<w<=width and 0<h<=height:
+        if 0<w<width and 0<h<height:
             i=np.random.randint(0, height-h)
             j=np.random.randint(0, width-w)
             return i,j,h,w

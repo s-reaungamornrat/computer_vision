@@ -203,22 +203,24 @@ def get_grad_norm(parameters, norm_type:float=2.)->torch.Tensor:
                 torch.norm(p.grad.detach(), norm_type) for p in parameters
             ]), norm_type)
 
-def save_checkpoint(fpath, model, optimizer, epoch, best_loss, scaler=None):
+def save_checkpoint(fpath, model, optimizer, epoch, best_loss=None, best_acc1=None, scaler=None):
     """Save checkpoint 
     Args:
         fpath (str): Path to save file
         model (torch.nn.Module): Deep learning model
         optimizer (torch.optim): Optimizer
         epoch (int): Current training epoch
-        best_acc (float): Best top1 accuracy so far
+        best_loss (float): Best loss so far
+        best_acc1 (float): Best top1 accuracy so far
         scaler (torch.amp.GradScaler)
     """
     checkpoint={
         "model":model.state_dict(),
         "optimizer":optimizer.state_dict(),
         "epoch":epoch,
-        "best_loss":best_loss
     }
+    if best_loss is not None: checkpoint['best_loss']=best_loss
+    if best_acc1 is not None: checkpoint['best_acc1']=best_acc1
     if scaler is not None: checkpoint['scaler']=scaler.state_dict()
     torch.save(checkpoint, fpath)
 
