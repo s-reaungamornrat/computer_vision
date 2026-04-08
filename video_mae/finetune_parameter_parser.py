@@ -12,7 +12,8 @@ parser.add_argument('--n_epochs', default=None, type=int, help='for debugging an
 parser.add_argument('--time', default=None, type=float, help='hours to train the model before terminate the training')
 
 # model parameters
-parser.add_argument('--model', default='vit_base_patch16_224', type=str, metavar='MODEL', help='Name of model to train')
+parser.add_argument('--model', default='vit_small_patch16_224', type=str, metavar='MODEL', choices=['vit_small_patch16_224', 'vit_tiny_patch16_224'],
+                    help='Name of model to train')
 parser.add_argument('--tubelet_size', default=2, type=int)
 parser.add_argument('--cos_attn', action='store_true', default=False)
 parser.add_argument('--input_size', default=224, type=int, help='input image size')

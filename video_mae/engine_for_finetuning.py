@@ -17,7 +17,7 @@ from computer_vision.torch_video.utils.progress import save_metrics
 
 from computer_vision.video_mae.dataset.mixup import Mixup
 from computer_vision.video_mae.dataset.datasets import VideoClsDataset
-from computer_vision.video_mae.models.modeling_finetune import vit_tiny_patch16_224
+from computer_vision.video_mae.models.modeling_finetune import vit_tiny_patch16_224, vit_small_patch16_224
 from computer_vision.video_mae.models.load_pretrain import load_pretrained_model
 from computer_vision.video_mae.optim_factory import LayerDecayValueAssigner, create_optimizer
 from computer_vision.video_mae.models.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
@@ -225,10 +225,11 @@ def train(args):
                        switch_prob=args.mixup_switch_prob, mode=args.mixup_mode, label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     # model
-    model=vit_tiny_patch16_224(pretrained=False, img_size=args.input_size, num_classes=args.nb_classes, all_frames=args.num_frames*args.num_segments,
+    model_class=vit_small_patch16_224 if args.model=='vit_small_patch16_224' else vit_tiny_patch16_224
+    model=model_class(pretrained=False, img_size=args.input_size, num_classes=args.nb_classes, all_frames=args.num_frames*args.num_segments,
                               tubelet_size=args.tubelet_size, drop_rate=args.drop, drop_path_rate=args.drop_path, attn_drop_rate=args.attn_drop_rate,
                               head_drop_rate=args.head_drop_rate, use_mean_pooling=args.use_mean_pooling, init_scale=args.init_scale,
-                              with_cp=args.with_checkpoint, cos_attn=args.cos_attn)
+                              with_cp=args.with_checkpoint, cos_attn=args.cos_attn if args.model!='vit_small_patch16_224' else False)
     print(f"{args.tubelet_size=}, {args.drop=}, {args.drop_path=}, {args.attn_drop_rate=}, {args.head_drop_rate=}., {args.use_mean_pooling=}")
     print(f"{args.init_scale=}, {args.with_checkpoint=}")
     args.patch_size=model.patch_embed.patch_size

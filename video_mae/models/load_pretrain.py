@@ -123,17 +123,21 @@ def load_pretrained_model(args, model, weight_fpath, org_num_frames=16):
         
     """
     checkpoint=torch.load(weight_fpath, map_location='cpu', weights_only=False)
-    checkpoint_model=checkpoint['model']
+    checkpoint_model=checkpoint['model'] if 'model' in checkpoint else checkpoint['module']
     state_dict=model.state_dict()
     
     all_keys=list(checkpoint_model.keys())
     new_dict=OrderedDict()
     for key in all_keys:
         if key.startswith('encoder.'): 
-            new_dict[key[len('encoder.'):]]=checkpoint_model[key]
-            if key[len('encoder.'):] not in state_dict:
+            new_key=key[len('encoder.'):]
+            if new_key in state_dict:
+                if checkpoint_model[key].shape!=state_dict[new_key].shape: continue
+                else: new_dict[new_key]=checkpoint_model[key]
+            else:
                 print('load_pretrain.load_pretrained_model: ', key[len('encoder.'):], ' is in model state_dict: ', key[len('encoder.'):] in state_dict)
-        else: new_dict[key]=checkpoint_model[key]
+        elif checkpoint_model[key].shape==state_dict[key].shape:
+            new_dict[key]=checkpoint_model[key]
     checkpoint_model=new_dict
     
     # interpolate learned position embedding
