@@ -248,6 +248,10 @@ def load_state_dict(model, state_dict, prefix='', ignore_missing='relative_posit
         prefix (str): Prefix of parameter names, often indicates parameter levels in the model parameter tree
         verbose (bool): Whether to print detailed unexpected keys
     """
+    # ###
+    # print('In utils.load_state_dict', flush=True)
+    # initial_model_params={name:param.clone() for name, param in model.named_parameters()}
+    
     missing_keys, unexpected_keys, error_msgs=[],[],[]
     metadata=getattr(state_dict, '_metadata', None)
     state_dict=state_dict.copy() # copy state_dict so _load_from_state_dict can modify it
@@ -284,3 +288,8 @@ def load_state_dict(model, state_dict, prefix='', ignore_missing='relative_posit
     if len(unexpected_keys)>0 and verbose: print(f"\nWeights from pretrained model not used in {model.__class__.__name__}: {unexpected_keys}")
     if len(ignore_missing_keys)>0: print(f"\nIgnored weights of {model.__class__.__name__} not initialized from pretrained model: {ignore_missing_keys}")
     if len(error_msgs)>0: print('\n'.join(error_msgs))
+
+    # ####
+    # for name, param in model.named_parameters():
+    #     same=torch.allclose(param, initial_model_params[name])
+    #     if not same: print(f"{name} does change", flush=True)

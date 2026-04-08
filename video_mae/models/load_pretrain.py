@@ -122,6 +122,10 @@ def load_pretrained_model(args, model, weight_fpath, org_num_frames=16):
         weight_fpath (str|Path): Path to a file storing the pretrained model parameter values
         
     """
+    # ###
+    # print('In load_pretrain.load_pretrained_model', flush=True)
+    # initial_model_params={name:param.clone() for name, param in model.named_parameters()}
+    
     checkpoint=torch.load(weight_fpath, map_location='cpu', weights_only=False)
     checkpoint_model=checkpoint['model'] if 'model' in checkpoint else checkpoint['module']
     state_dict=model.state_dict()
@@ -155,3 +159,7 @@ def load_pretrained_model(args, model, weight_fpath, org_num_frames=16):
                                                                org_num_frames=org_num_frames)
     
     load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
+    # ####
+    # for name, param in model.named_parameters():
+    #     same=torch.allclose(param, initial_model_params[name])
+    #     if not same: print(f"{name} does change", flush=True)
