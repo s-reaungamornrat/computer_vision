@@ -22,7 +22,21 @@ pip install pyyaml
 pip install polars
 ```
 
+## Ultralytics
+```
+conda create -n ultralytics -c conda-forge python=3.11
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+pip install -U ultralytics
+```
+
 ## To remove conda environment
 ```
 conda remove -n ENV_NAME --all
+# or
+conda remove --name myenv --all
+```
+
+## Update conda base
+```
+conda update -n base -c conda-forge conda
 ```

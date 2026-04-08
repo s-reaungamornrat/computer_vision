@@ -97,7 +97,7 @@ class SmoothedValue(object):
         self.fmt=fmt
     def update(self, value, n=1):
         self.deque.append(value)
-        self.count+=1
+        self.count+=n
         self.total+=value*n
     @property
     def median(self):

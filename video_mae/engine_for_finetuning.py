@@ -43,7 +43,7 @@ def accuracy(output, target, topk=(1,)):
     correct=pred.eq(target.reshape(1,-1).expand_as(pred)) # (maxk, b) bool tensor
     
     # iterate through each topk and compute average correctness from all items in the batch
-    return [correct[:min(k, maxk)].reshape(-1).float().sum()*100./batch_size for k in topk]
+    return [correct[:min(k, maxk)].reshape(-1).float().sum()*(100./batch_size) for k in topk]
 
 
 @torch.no_grad()
